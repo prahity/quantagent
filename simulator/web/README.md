@@ -3,7 +3,7 @@
 Next.js (App Router, TypeScript, Tailwind, shadcn/ui, recharts) front end for the independent simulator in this repository. It talks only to the FastAPI runner layer; it never touches the snapshot or the engine directly.
 
 ```bash
-# in the repo root, start the API first
+# from the simulator/ folder, start the API first
 .venv/bin/uvicorn server.app:app --port 8711 --reload
 
 # then

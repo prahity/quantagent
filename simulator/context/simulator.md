@@ -4,7 +4,7 @@ Working spec for the simulator slice. Source of truth remains `README.md`, `AI-T
 
 ## Status: built
 
-Implemented and checked against real data (see "Running the simulator" in `README.md`):
+Implemented in this `simulator/` folder, separate from the agent design docs at the repository root. Checked against real data (see `simulator/README.md`):
 
 - `sim/`, `contracts/`, `agent/`, `runner.py`, `server/` (FastAPI, port 8711), `web/` (Next.js, port 3177), `scripts/fetch_data.py`, `tests/` (29 checks on real-data fixtures, including the AST import-boundary test).
 - Data: Yahoo Finance hourly + daily bars and SEC EDGAR filings for 8 symbols, 2024-01-01 → 2026-07-21, snapshot `snap-17f602c41277a742` (gitignored; manifest committed). Optional Alpha Vantage / Finnhub news when free keys are present.
