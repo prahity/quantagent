@@ -1,0 +1,209 @@
+# Build guide: A growing Zetaris knowledge base and learned analysis
+
+Oct 22, 2026 · Sai Ramsankar & Prahit Yaugand
+
+## Hackathon target and Nemotron
+
+Build the primary evidence and analysis path on Zetaris: retain released news/market history and join market, news/company-event and independent trial-result sources. Study whether the fixed Nemotron model learns to use this growing knowledge base better when Meterless retrieves decision-to-outcome experience and rules for what to analyze. The learned analysis policy should guide explicit SQL queries as well as the next trade or strategy experiment.
+
+Target Track 03, Reasoning Architecture, in the [Open Agent Hackathon 2026](https://hackathon.genai.works/event/open-agent-hackathon-2026). Demonstrate a linked path from market data and remembered experience through strategy planning to actions, independent outcomes and a revised strategy. Use ablations and timing/reset checks to substantiate the architecture's value; do not assume the proposed design is novel or profitable before evaluation.
+
+Use NVIDIA Nemotron for the trading agents and the planning, critique and synthesis stages. Pin the actual model ID/version, endpoint and inference settings, and keep them fixed across base, intermediate, final and ablated agents. Verify the sponsor/Meterless route and JSON behavior with the available service. A trained checkpoint includes its evolved strategy, prompts and eligible memory; weight fine-tuning is a separate optional method. The evaluator research agent may also use Nemotron to summarize sources, while remaining outside the tested agent's tools.
+
+Measure the selected model's SQL planning and evidence interpretation; being open source does not imply weak reasoning or make common sense alone sufficient. [Co-LMLM](https://arxiv.org/abs/2607.07707) is conceptual inspiration for external knowledge. This build uses explicit SQL calls and memory-based adaptation, not its trained continuous-query mechanism.
+
+Build in five stages, in order. Each depends on the one before and ends with a check you can run.
+
+The simulator/evaluator is an independent market environment. Historical mode replays archived prices/news/context by simulated time; live-market paper mode uses a live feed and an internet-enabled evaluator research agent. Both modes own data release, order execution and official evaluation. Each agent starts with configurable cash `initial_cash = K`. The agent has no web-search or general internet access. It uses Zetaris SQL for released-data analysis and structured persistence. Meterless plans work across distinct strategy agents, combines analyses, remembers strategy/decision/action/results, and proposes improved candidates for further simulator evaluation. It returns actions as fixed JSON. V1 makes one decision per simulated minute; V2 submits a scheduled trading plan for the coming simulated minute. Build and verify this environment with a scripted agent before connecting the AI agent.
+
+## Step 0: What to download
+
+Prepare the simulator's data and execution dependencies separately from the agent's model dependencies.
+
+| Item | What it's for | How to get it |
+| --- | --- | --- |
+| Python 3.11+ | Simulator, data collectors, the runner and agent adapter | python.org, or the `uv` installer |
+| Git | Version control; inspecting the Swarms project | git-scm.com |
+| Meterless orchestration and memory | Planning distinct strategy agents, remembering simulator results, synthesizing and improving candidates | Check the [Swarms README](https://github.com/Meterless/Swarms) for documented planning, parallel execution, synthesis and memory/context features. Verify the automated strategy-search and memory adapters. |
+| Node.js + npm | Running a Swarms web/source build, if the supplied project supports it | Follow the instructions for the actual build provided to the team. |
+| Zetaris instance and writable source/lakehouse | Primary joined market intelligence, trial analysis and structured evidence | Provision separate simulator and agent identities. The agent can read the released feed and write only its own workspace. Verify SQL reads, inserts and permissions on the actual instance. |
+| Zetaris JDBC driver and Java runtime | One connection option for simulator and agent SQL clients | Use a driver/runtime supported by the supplied instance. JDBC, ODBC and REST are documented options. Each client uses its own limited identity. |
+| Nemotron model endpoint/API key | Trading agents and planning/critique/synthesis | Use the provided Nemotron serving route; pin model ID/version and inference settings. The market replay/accounting and scripted controls must run without model calls. |
+| Price data | Minute data for V1 and sufficiently fine quotes/trades for V2 | Choose a source with coverage and resolution matching the run. Record provenance and corporate actions. Daily bars are suitable only for an accounting smoke check, not minute-mode claims. |
+| News and web context | Timestamped articles and financial context collected by the simulator | Select archives/providers with verifiable publication, availability and revision times. Web-search date filters alone are insufficient. |
+| Evaluation engine | Existing execution/accounting software behind the simulator | Inspect and pin a suitable [HKUDS AI-Trader](https://github.com/HKUDS/AI-Trader) revision. If unsuitable, use a local engine such as [Backtrader](https://www.backtrader.com/docu/). Verify the adapter rather than assuming minute-mode support. |
+
+An initial Python environment can use the prototype package set below. The `openai` client is for a selected OpenAI-compatible Nemotron route; use the actual serving adapter required by the sponsor deployment. Pin working dependency versions after the integration check. Optional adapters are needed only when used.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install pandas numpy pyarrow pydantic python-dotenv \
+            jaydebeapi jpype1 yfinance requests trafilatura \
+            openai matplotlib pytest
+```
+
+Keep secrets in git-ignored environment files. Give the environment/research service an ingestion identity and the trading agent a different SQL identity. Configure project settings such as `NEMOTRON_MODEL_ID`, `NEMOTRON_BASE_URL` and `NEMOTRON_API_KEY` in the model adapter; these are our configuration names, not a claim about a provider-specific SDK. Limit the agent to released-feed reads and its own workspace writes. Keep vendor keys, private archive access and connection administration on the simulator side. The agent runtime may reach its model provider through the approved invocation path; this does not grant the agent browsing/search tools. Never include secrets in prompts.
+
+First verify the available Meterless build's memory operations and automated integration route: write an experience, retrieve it by relevant stock/context, attach a later outcome and restore context after restart. Its documented task-execution DAG is separate from our persistent decision-history DAG. The graph schema and Zetaris synchronization require a project adapter; a native connector is not assumed. This integration must preserve the simulator's fixed JSON contract.
+
+## Repo layout
+
+The simulator owns outside data collection, the release clock and execution/evaluation. Zetaris serves released data and structured analytical/graph records with separate permissions. Meterless manages strategy planning, result synthesis, memory retrieval and working context through adapters to those records. A runner connects the agent to the simulator's fixed JSON interface.
+
+```text
+ai-trader/
+├── config/
+│   ├── environment.yaml  # initial_cash, mode, cadence, time_scale, costs
+│   └── splits.yaml       # chronological windows and sealed latest testbed
+├── sim/                  # never imports agent/
+│   ├── data/
+│   │   ├── zetaris_client.py # simulator ingestion/release identity
+│   │   ├── load_prices.py
+│   │   ├── load_news.py      # internet-enabled simulator collector
+│   │   └── export_snapshot.py
+│   ├── snapshot/         # private frozen archive, including future rows
+│   ├── feed.py           # publishes released data into Zetaris
+│   ├── news_queue.py     # timestamped news/context events
+│   ├── relevance.py      # current positions/watchlist/universe digest
+│   ├── scheduler.py      # minute prompts and V2 scheduled orders
+│   ├── engine.py         # clock and environment interface
+│   ├── engine_adapter.py # chosen existing evaluation engine
+│   ├── broker.py         # engine order/portfolio adapter
+│   ├── metrics.py        # validated report from engine records
+│   └── service.py        # fixed JSON request/action/feedback transport
+├── contracts/
+│   ├── decision_request.py
+│   ├── action.py         # shared V1/V2 response envelope
+│   └── report.py
+├── agent/                # never imports sim/
+│   ├── client.py         # simulator actions/feedback
+│   ├── zetaris_client.py # released-feed reads, own-workspace writes
+│   ├── query_tool.py     # independent SQL tool, cutoff binding and audit
+│   ├── query_policy.py   # analysis goals and versioned query-planning rules
+│   ├── roles.py
+│   ├── policy.py         # prompt + SQL analysis -> JSON actions
+│   ├── model.py          # pinned Nemotron serving adapter
+│   ├── memory.py         # Meterless remember/retrieve and context adapter
+│   ├── decision_graph.py # query/decision/outcome/rule and strategy lineage
+│   ├── strategies/      # versioned candidate agent policies/configurations
+│   ├── search.py        # Meterless planning, isolated trials and synthesis
+│   └── graph_store.py    # durable strategy/decision nodes and edges
+├── evaluation/
+│   ├── research_agent.py # live evaluator news/context collection
+│   ├── context_feed.py   # common, timestamped context interface
+│   ├── harness.py        # frozen checkpoint comparisons
+│   ├── reset.py          # fresh state and disposable test memory
+│   ├── ablations.py      # full / no Meterless / no Zetaris / neither
+│   ├── query_tasks.py    # held-out prompts, frozen snapshots and expected results
+│   ├── query_metrics.py  # semantics, evidence, time safety and efficiency
+│   └── plots.py          # query quality, iteration/profit and time/equity
+├── checkpoints/          # immutable base, selected intermediate, final
+├── runner.py
+├── baselines/
+├── runs/                 # prompts, SQL audit, actions, fills, reports
+└── tests/
+```
+
+Zetaris exposes two logical areas to the agent: a simulator-managed released feed and an agent-owned analysis/decision-history workspace. The private full historical archive remains unavailable to its SQL identity. Complete graph records persist in the workspace; Meterless retrieves references/summaries and reconstructs working context through our adapter. A frozen archive and versioned release rules make historical runs reproducible.
+
+## Phase 1: Primary Zetaris data products and simulator releases
+
+Goal: establish Zetaris as the full agent's shared market-intelligence layer. Join environment-supplied price, news/event and evaluator-result sources into traceable, time-scoped data products that drive decisions and strategy improvement.
+
+1. **Declare chronological boundaries and access.** Define older training windows, later validation windows and the latest complete interval as a sealed testbed. Record exact boundaries before development; all policy-selection information must predate the test start. Then create separate identities and namespaces. The simulator owns ingestion and released-feed writes. The agent can select from its released feed and insert analyses into pre-provisioned workspace tables. Keep future archives, other runs, external connectors and administration inaccessible. Confirm actual read/write operations and storage support before relying on them.
+2. **Register sources and define the shared model.** Keep price archives, timestamped news/company-event records and simulator-result ledgers as independently registered sources where practical. Validate the actual connectors, source versions and cross-source joins on the supplied Zetaris instance. Define shared company/ticker identifiers, currency, time zone, availability timestamps and feature/result units. This is an implementation requirement for this design, not a claimed minimum-source rule from the hackathon.
+3. **Build the primary data products.** Implement `decision_context`, `strategy_performance_by_context`, `strategy_lineage_evidence` and `evaluation_report` over permitted source objects. Use completed trial outcomes and features that were known at entry time when comparing performance by event/sector/volatility context. Keep official result inputs evaluator-owned. Require each strategy/action rationale to reference its query IDs and source records; let Meterless summarize/retrieve those records for later planning.
+4. **Pick a universe and time resolution.** Start with a small, declared universe. Use minute or finer price data for V1 and sufficiently fine quotes/trades for V2's scheduled execution. Keep historical universe membership and financial inputs consistent with what was known then.
+5. **Collect prices and financial inputs.** Record symbol, event/bar time, availability time, source and dataset version. Document corporate-action treatment, exchange time zones and market hours. A full minute's high, low, close and volume are not available at the start of that minute.
+6. **Collect news and web context.** In simulation, the environment collects/verifies an archive and later replays it. In live mode, add an evaluator-side research agent that searches sources for news, filings, earnings and other relevant context. Trading agents never receive web-search tools. If existing evaluator research functionality meets the same rules, wrap and validate it; otherwise implement the adapter. Record `event_id`, symbols/entities, `published_at`, `available_at`, `retrieved_at`, source URL, title, body and content-version ID. Availability must refer to that article version in the source, rather than a modern scrape timestamp or a search-result date alone. Reject unverifiable records and retain later edits as separate versions. Keep all released raw versions queryable in persistent registered storage; digests do not replace them. Give derived summaries, event labels and features their own input references, extractor/model version and creation/availability times.
+7. **Build the time-series release queue.** Order news/context by availability. As the simulated clock reaches each record, release it into the permitted Zetaris feed and stamp `released_at`. A decision at t can use a record only if publication, availability and release times are all no later than t. Apply the same rule to titles, snippets and generated digests; summaries must cite only eligible versions. Analyses using later outcomes cannot be backdated to the source article's publication time.
+8. **Choose relevant context causally.** Publish a common time-stamped feed for comparison agents. In live mode, research the declared universe and union of current holdings/watchlists so one candidate's request does not privately improve only its input feed. At each prompt, apply the same relevance policy to currently held stocks, the agent's declared watchlist, eligible universe, sectors and market-wide news. Use only positions/watchlist state already known at that time. Retain eligible older records for SQL investigation. Fix the relevance policy and digest budget in the run configuration.
+9. **Provide analytical and decision-history tables.** Pre-provision `features`, `findings`, `predictions`, `strategies`, `evaluations`, `query_calls`, `query_results`, `query_rules`, `decision_nodes` and `decision_edges` in the agent workspace, or equivalent objects supported by the selected source. Scope strategy/decision records by version, candidate and run; record parent IDs and development/validation windows for each candidate. Use supported SQL inserts for selected records, analyses and graph events. Nodes carry stable IDs, type, run/decision IDs, simulated creation/availability time and provenance/payload references. Edges carry endpoints, relation type, run scope and creation/availability time. Later simulator feedback is appended only when released. These records support Meterless memory retrieval; they do not change source facts or official scores.
+10. **Freeze and validate.** Version the private historical dataset, content versions, relevance rules and preprocessing. In live mode, record real first-observed/release times and archive the common feed for audit. Never relabel a modern search summary as historical context. Check missing prices, duplicate events and ambiguous timestamps. Log SQL reads/writes and preserve their decision cutoffs. If earlier learning is carried into a run, record that choice explicitly.
+
+Done when: a Zetaris query joins distinct permitted market/news-event/result sources, its evidence supports a proposed strategy experiment, the agent can persist/retrieve analytical records, and future data or evaluator-owned facts remain inaccessible to unauthorized reads/writes. In a toy timeline, an article released at 14:00:40 is absent from the 14:00 decision and present at 14:01; a 14:02 article remains unavailable.
+
+## Phase 2: Independent simulator and existing evaluation engine
+
+Goal: an environment that initializes cash `K`, releases data, accepts fixed JSON actions and independently evaluates them through a chosen execution engine.
+
+1. **Select and pin the engine.** Evaluate [HKUDS AI-Trader](https://github.com/HKUDS/AI-Trader) as the first candidate. Its current README includes live trading and market-intelligence jobs, but the time-gated research feed, test reset and historical V1/V2 behavior required here have not been verified. Inspect and pin a relevant research/backtesting revision if available. If it cannot provide the required local controls, choose an engine such as Backtrader and record its version. Framework choice remains pending a working adapter check, not a claim of completed integration.
+2. **Define shared schemas.** The fixed JSON decision request includes schema/run/request IDs, mode, data cutoff, decision window, `initial_cash`, current account, cadence, `time_scale`, execution resolution, accessible Zetaris objects and relevant-news event IDs. The fixed response has schema/run/request IDs, mode, window start/end, `orders` and `reason`. Use the exact V1/V2 examples and field names in the companion architecture document.
+3. **Define order validation.** Each order has `order_id`, `execute_at`, `symbol`, `side`, `quantity`, `order_type` and `limit_price`. Require JSON only, exact fields, known enums/symbols, positive finite quantities and valid timestamps. `orders: []` means hold. V1 orders activate at the current decision boundary; V2 activation times must lie within the coming minute. The simulator determines fill prices, checks risk/cash/inventory and rejects stale or duplicate responses.
+4. **Initialize capital and state.** The evaluation harness restores the selected agent's own frozen pre-test checkpoint, then requests a fresh environment starting at the test boundary. Cash equals `K`, positions use the configured starting state, and run IDs, orders and account state are new. Create a disposable writable test-memory layer over the checkpoint's permitted training memory. Do not reset cash each minute. Agent memory cannot change official engine accounting.
+5. **Implement cadence and acceleration.** Working default: `cadence_clock = simulated`, one decision request every 60 simulated seconds, and a V2 planning horizon of 60 simulated seconds. `time_scale = s` means simulated seconds per playback second and is visible to the agent. Keep it distinct from capital `K`. A wall-clock request limit needs a separate configuration and a converted horizon. By default, historical replay pauses during inference and pins SQL reads to that decision's cutoff. Live evaluation uses `time_scale = 1`; the market clock continues during inference, so count actual latency and reject/skip expired actions instead of backdating them. Version any latency model.
+6. **Implement V1.** Issue one decision prompt at each minute boundary. Accept immediate buy/sell orders or hold, then process prices, news releases, executions and account updates until the next boundary. Do not add extra discretionary decision prompts inside the minute.
+7. **Implement V2.** Ask the agent once to plan the next minute. It chooses zero or more order activation times in that window. Queue them, advance through market/news events, and activate orders when due. Use the first suitable event under the engine's fill model. News arriving mid-minute enters the feed but does not trigger an extra model decision; the next scheduled prompt can use it. Validate order validity/expiry and execution-time inventory, and record rejection or cancellation of unfilled/invalid orders.
+8. **Adapt execution and metrics.** Use the selected engine's broker/accounting records for fills, cash, positions and equity. Configure costs, slippage, leverage/shorting and market hours. Export final equity, net return, drawdown, turnover and the fill log. Use explicit return sampling/annualization for Sharpe; daily sampled returns are a practical reporting choice for a sufficiently long run. A platform that accepts self-reported trade prices alone does not supply independent execution evaluation.
+9. **Verify the adapter on a small recorded replay.** Run without an LLM. Check known orders after costs, two differently timed V2 orders, release/withholding of news, JSON rejections and future-data SQL denial. Replay the same accepted action log and verify identical account outcomes under the same engine/data/configuration. Check results against a hand-computed example. For memory reset, place a test-only marker/lesson in run A, end that run, restore the checkpoint for run B, and verify that training fixtures remain available while run A's marker, summaries and index entries do not.
+
+Done when: a scripted agent runs through the public contract, the recorded replay checks pass, the engine/report versions are recorded, and the simulator operates independently of the quant agent. These checks are implementation requirements; this document update does not claim they have been run.
+
+## Phase 3: Meterless strategy agents, shared memory and improvement
+
+Goal: Meterless combines data analysis and remembered experience, coordinates diverse strategy agents, compares independent simulator results, and uses those results to improve both query planning and strategies. Each candidate still trades through the V1/V2 JSON interface.
+
+**Independent query tool.** Implement `zetaris_query` as our versioned analysis interface. Accept the run/request/query IDs, analysis goal, SQL and parameters. Bind the permitted `as_of` and source versions from the environment request, enforce released objects/permissions, and return rows or a structured error plus provenance/result references. Log failed attempts, retries, truncation, elapsed time and model/tool cost. Set per-decision call, result and timeout limits. Keep read queries separate from the agent's scoped persistence writes and from JSON orders. An analysis prompt goes to Nemotron; Zetaris receives the resulting SQL.
+
+**Analytical rules.** Let Meterless retrieve and revise rules about what to investigate: sources/joins, lookback windows, comparison groups, missing evidence and misleading correlations. Store trigger conditions, recommended analysis, supporting cases, counterexamples, sample/window/regime, uncertainty, validation status and previous version. Keep these distinct from entry/exit/sizing rules. Preserve the full query-to-outcome record; retrieve only a relevant bounded subset. For correlations, retain event windows, comparators, sample sizes and uncertainty; validate selected patterns on later windows rather than treating them as causes or established rules.
+
+1. **Prove the memory and orchestration adapters.** Remember a sample strategy/decision/action, attach a later simulator result, retrieve the experience, and recover it after restart. Demonstrate a small planned task graph with two distinct candidate outputs. Confirm the supported automated path with the available build. The trading-history graph, SQL synchronization and search controller are our integration work.
+2. **Define a strategy record.** Save stable strategy/version IDs, parent IDs, policy/configuration, analysis-policy/rule versions, input features, entry/exit rules, risk/sizing rules, V1/V2 mode and model/prompt/code versions. Keep the simulator contract fixed; strategies generate JSON orders and cannot modify fills or official scoring. Predeclare chronologically ordered development/validation windows, ranking objective, risk constraints, run/generation/token budgets and stopping criteria. Advance older-to-newer cutoffs and carry forward only eligible experience. Save immutable policy/prompt/memory snapshots at generation 0, selected intermediate generations and the final selected generation; retain model/version and data-cutoff metadata.
+3. **Plan distinct strategy agents.** Feed the Meterless planner joined Zetaris market context and completed-trial analyses, with query/source references, plus retrieved prior strategies/results. Let the returned cross-source evidence determine which hypothesis or combination to investigate next. Ask agents to investigate different hypotheses such as momentum, mean reversion, news confirmation and risk management. Each must produce a concrete candidate, its intended behavior and evidence references rather than only an opinion about the market.
+4. **Evaluate candidates in isolated simulator runs.** Reset a separate account with capital `K` for each candidate. Match market/news data, timeframe, decision cadence, cost and fill rules. Use candidate-scoped state and permitted seed memory. Run concurrently when resources allow, within the declared budget. A candidate's completed future results must not become accessible to another candidate still acting at an earlier simulated time.
+5. **Capture both strategy lineage and trading experience.** Link prior rules and analysis goals to query attempts, returned evidence, decisions, predictions and action plans, then link orders to actual simulator fills/rejections, later observed outcomes and revised rules. Record evaluation metrics against the exact strategy version, declared window and environment version. Store failed queries/trials alongside successes. Nodes/edges carry run/candidate IDs, provenance and simulated availability times; original decisions/predictions remain immutable. This records evidence and decision lineage, not proof that a chosen analysis caused a profitable result.
+6. **Retrieve useful context during each run.** Before query planning, Meterless supplies a bounded selection of eligible past analyses, decisions, results, rules and unresolved predictions for the current situation. Follow record references for details. Keep the complete history in the SQL-backed records and make the memory/index state reconstructible. The agent's internal context assembly does not change the simulator's fixed JSON requests/responses or permit extra discretionary V2 decisions inside the minute.
+7. **Compare, synthesize and critique.** After development trials complete, compare their validation metrics, costs, failures and observable market conditions. Have Meterless propose new strategy versions, combine supported components, or propose a selector/allocation across candidates. Store which parents and components informed the proposal. A critic checks conflicting rules, unsupported conclusions, duplicated ideas and risk limits.
+8. **Rerun every proposed combination.** A merged policy or ensemble is a new candidate. Reevaluate it with total capital `K`, consistent execution, net exposure and transaction costs. Compare it against its parents on the same windows; do not use an average of parent returns as evidence of merged performance. Iterate while budgets and validation improvement justify it, retaining versions so regressions can be reverted.
+9. **Promote checkpoints for a sealed comparison.** Select the final candidate and intermediate checkpoint set using development/validation only, then freeze them before opening the latest-period testbed. Restore each candidate's own pre-test state independently. Allow memory updates from progressively released feedback only within that run. At its end, seal the audit, discard the runtime memory delta and restore the pre-test checkpoint for any preregistered repeat. Test-derived learning cannot enter another candidate or a new development generation. The agent cannot inspect the real upcoming minute in the simulator to choose a winning action retroactively.
+10. **Enforce access and temporal isolation.** Separate agent/controller and simulator services. Allow only the simulator interface, permitted Zetaris endpoint, Meterless integration and model invocation path. Browsing/search and indirect external-data enrichment stay disabled for agents. Cutoff controls apply to SQL rows, graph edges, summaries, retrieval indexes and shared memory. Development-controller access to completed training results must not become future-data access for an evaluated trading agent.
+11. **Measure learning and resource use.** Log planned tasks, strategies, SQL/evidence, retrieved memory IDs, context size, prompts, actions, fills, validation scores, parent/child changes, model/token cost and latency. One request per minute is a per-candidate trading decision cadence; overall search and memory work have separate declared budgets. Track the best validation score by generation and test whether a new version improves over its parents.
+
+Done when: at least two distinct strategies complete isolated runs, their results enter persistent shared memory, Meterless uses those results to propose a new version/combination, and that proposal is rerun and compared with its parents. Also demonstrate a trace from an earlier query/decision/outcome to a retrieved analytical rule and changed subsequent query. Recall must survive restart, time boundaries must hold, and the simulator must remain usable by other agent implementations. These are proposed implementation checks, not completed experiments.
+
+The target is the strongest empirically validated strategy found within the data and budget. Simulator search and memory do not prove global optimality or guarantee future profitability.
+
+## Phase 4: Sealed evaluation, ablations and hackathon evidence
+
+Goal: compare the final trained Nemotron agent with the base agent, intermediate versions and tool ablations on a common recent testbed, with fresh state for each run.
+
+1. **Seal the latest-period testbed.** Use recent historical years for development from earlier to later. Reserve the latest complete interval `[T0, T1]` before development begins. Every policy-selection checkpoint and its permitted seed memory must use only earlier information. Preselect intermediate generations, final candidate, repeat seeds, evaluation windows, costs and budgets before opening this interval. A live test starts prospectively after those choices are frozen.
+2. **Implement the full reset lifecycle.** For each candidate/repeat, restore its own frozen policy/prompts and training-memory snapshot; reset capital to `K`, account state, clock, run IDs, SQL namespace, conversations, caches, graph/index state and random-seed settings. Keep the learned development strategy. Allocate a fresh writable runtime-memory layer. During the test, the agent may remember observations/results and use them later in that same run. Afterward, export an evaluator-only audit and discard all test-derived runtime learning, including summaries, embeddings and selector updates. A following run starts from its checkpoint, never from the end of the previous test.
+3. **Support both evaluator modes.** Historical mode releases the simulator's archived as-of prices/news/context. Live-market paper mode adds an internet-enabled evaluator research agent and live market feed, publishes a common sourced context stream, and runs at actual market time. Trading agents remain unable to browse. Wrap native evaluator news/research tools if they meet the required freshness/timestamp controls, or supply our own service. AI-Trader's mention of market-intelligence jobs is not evidence that these controls are already implemented. Run live comparison agents concurrently over the same market interval; a later run on the recorded interval is labeled replay.
+4. **Compare checkpoints and controls.** Evaluate generation-0 base Nemotron, the preselected intermediate checkpoints and the final trained checkpoint. Each restores its own pre-test knowledge and then adapts only within its own test run. Add buy-and-hold and a simple rule-based control. Keep initial capital, underlying information, universe, V1/V2 cadence, execution/cost rules and permitted resource budgets comparable. All AI variants use the pinned Nemotron model/settings so improvements cannot be attributed to a model swap.
+5. **Run the tool-ablation matrix.** Use the following replacements and also allow narrower memory-off/synthesis-off/no-news experiments when the budget permits.
+
+| Variant | Planning and memory | Data backend |
+| --- | --- | --- |
+| Full | Meterless orchestration, shared context and synthesis | Zetaris |
+| Without Meterless | Plain controller plus a declared simple log/context baseline; matched trial budget | Zetaris with the same data |
+| Without Zetaris | Meterless unchanged | Local SQL/file backend with the same time-gated inputs and analytical records |
+| Without both | Same plain controller/context replacement | Same local replacement backend |
+
+The without-Zetaris implementation must reproduce the joined data products with the replacement pipeline over the same inputs. Removing Zetaris must not deprive a variant of news or price history. Keep Nemotron, candidates, training/validation dates, token/trial budgets, evaluator and starting capital fixed. Specify which behavior the replacement changes. Report trading performance plus data/query correctness, freshness, latency, failure rate and replay/reset reliability. A tool may contribute operational reliability without producing higher profit in every run.
+
+6. **Benchmark query planning independently.** Curate held-out analysis prompts with frozen as-of databases and hand-checked expected records/result semantics. Include eligible-news lookup, specified return calculations, cross-source comparisons, insufficient evidence and future-data rejection. Base/intermediate/final checkpoints must predate these task intervals and restore their own eligible query-policy/memory state. Give them the same prompt, schema, snapshot, model, call/token budget and result limits. Compare adaptive queries with fixed templates and memory disabled. Score SQL execution and semantic correctness, temporal/provenance safety, evidence coverage/relevance, supported interpretation, redundant calls, failures and latency. Equivalent SQL answers count as equivalent; exact text matching or an LLM judge alone is insufficient. Hold the downstream decision policy fixed when testing query planning alone, then evaluate full-system trading separately. Keep sealed task feedback out of development and discard task-run learning between comparisons.
+7. **Separate more data from better querying.** Cross base/learned analysis-policy checkpoints with earlier/fuller eligible database snapshots at a common cutoff. Both checkpoints must predate the task interval; the added records should be released after those checkpoints were frozen, and neither checkpoint may contain their facts or cached results. Keep schema, task, model and budgets fixed. If that separation cannot be established, label the result as combined memory/data access. A smaller database may correctly yield insufficient evidence. Compare policies on the same data and snapshots under the same policy. This intentional information-growth experiment differs from the without-Zetaris ablation, where information must stay equal.
+8. **Generate the learning charts.** Use checkpoint generation on the x-axis and evaluator net profit on the y-axis, including generation 0, intermediate checkpoints and final. Define `net_profit = final_equity - K` with no external cash flows, costs included and open positions valued by the same end-time convention. During development, plot validation results on comparable windows, or separate changing windows. Once all checkpoints/comparison choices are frozen, plot their sealed-test results as a distinct labeled series. Never feed this test curve back into training. Add query correctness/evidence quality and query calls/latency by checkpoint, an equity-versus-market-time chart and an ablation comparison; show repeat dispersion when preregistered repeats exist.
+9. **Export evaluator records.** Save generation, checkpoint, query-policy/memory version, query/task/snapshot IDs, variant, split/window, seed, initial cash, final equity, net profit, drawdown, turnover, fills/rejections, model cost, wall time, model/version, data/context version, engine/adapter version and checkpoint/reset IDs. Preserve query goals, SQL, results, provenance and failures. Use all declared runs; missing results are not zero-profit successes. Graphs are generated from these records after runs exist, not fabricated example profits.
+10. **Verify timing, reset and robustness.** Check that future articles, late revisions and hindsight summaries stay out of prompts/SQL/memory; test the reset marker from Phase 2 across repeats/candidates. Verify common-feed freshness in live mode and count inference latency. Stress costs and check benchmark/accounting consistency. Time-ordered data reduces feed leakage, while a pretrained model may still know historical market events; disclose this limitation and use forward paper evaluation as additional evidence.
+11. **Prepare the Track 03 demonstration.** Show separate sources entering the governed feed, Meterless retrieving an analytical rule from past decision/outcome history, the resulting Zetaris question/SQL, returned evidence, a valid Nemotron JSON action and its independently scored result. Compare base/learned queries on one matched analysis task and expose a failure/correction. Make the query and joined source records inspectable from the decision/revision. Let a reviewer trace the strategy/decision DAG, compare base/intermediate/final generations, inspect reset isolation and view the tool ablations. Present the architecture's claimed contribution as supported by those measurements; describe any unimplemented or unverified integrations plainly.
+
+Done when: the selected checkpoint/ablation suite runs under the sealed protocol, within-run memory works, later runs begin cleanly, reports/graphs come from recorded evaluations, and the demo shows a complete data-memory-reasoning-action-feedback path. These are implementation and evaluation requirements, not a claim that trading experiments have already been run.
+
+## Sources
+
+- [Open Agent Hackathon 2026: Track 03 and rubric](https://hackathon.genai.works/event/open-agent-hackathon-2026)
+- [Hackathon programme: Nemotron through Meterless](https://academy.genai.works/courses/open-agent-hackathon-2026/details)
+- [NVIDIA Nemotron usage example](https://docs.nvidia.com/nemotron/0.1.0/use-case-examples/Simple%20Nemotron-3-Nano%20Usage%20Example/README.html)
+- [Co-LMLM: Continuous-Query Limited Memory Language Models](https://arxiv.org/abs/2607.07707): inspiration for external knowledge; not a trading study or the SQL-tool implementation proposed here.
+- [Meterless Swarms: official repository and README](https://github.com/Meterless/Swarms): documented orchestration, synthesis and memory/context features; the trading search/feedback integration remains to be verified.
+- [Zetaris AgentFlow](https://www.zetaris.com/agentflow): connecting and querying data sources.
+- [Zetaris: overview of connecting](https://kbase.zetaris.com/knowledge/overview-of-connecting-to-zetaris): JDBC, ODBC and REST access.
+- [Zetaris SQL Guide](https://kbase.zetaris.com/knowledge/sql-guide): retrieval, inserts and grants; verify selected-source support.
+- [Zetaris row/column controls](https://kbase.zetaris.com/knowledge/controlling-row-level-access): permissions on accessible data.
+- [HKUDS AI-Trader](https://github.com/HKUDS/AI-Trader) and [agent guide](https://github.com/HKUDS/AI-Trader/blob/main/docs/README_AGENT.md): current platform scope; historical minute-mode compatibility remains to be demonstrated.
+- [Backtrader replay](https://www.backtrader.com/docu/data-replay/data-replay/), [broker](https://www.backtrader.com/docu/broker/) and [analyzers](https://www.backtrader.com/docu/analyzers-reference/): alternative engine documentation.
+
+The JSON interface, causal data-release queue, decision-history DAG, Meterless memory adapter, Zetaris synchronization, isolation and scheduling adapters are project components to implement. Meterless, Zetaris and the chosen trading engine must be connected and verified; this guide describes the intended build rather than a completed integration.
