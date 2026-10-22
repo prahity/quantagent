@@ -1,6 +1,28 @@
 # Simulator local context
 
-Working spec for the next build. Source of truth remains `README.md`, `AI-Trader-Architecture.md`, and `AI-Trader-Build-Guide.txt` (pulled at `ec6a48a`). This file narrows those documents to the independent simulator. It is local context, not a change to the design.
+Working spec for the simulator slice. Source of truth remains `README.md`, `AI-Trader-Architecture.md`, and `AI-Trader-Build-Guide.txt` (pulled at `ec6a48a`). This file narrows those documents to the independent simulator. It is local context, not a change to the design. The sections below the status block are the original working spec; the status block records what was actually built and where it deviates.
+
+## Status: built
+
+Implemented and checked against real data (see "Running the simulator" in `README.md`):
+
+- `sim/`, `contracts/`, `agent/`, `runner.py`, `server/` (FastAPI, port 8711), `web/` (Next.js, port 3177), `scripts/fetch_data.py`, `tests/` (26 checks on real-data fixtures, including the AST import-boundary test).
+- Data: Yahoo Finance hourly + daily bars and SEC EDGAR filings for 8 symbols, 2024-01-01 → 2026-07-21, snapshot `snap-17f602c41277a742` (gitignored; manifest committed). Optional Alpha Vantage / Finnhub news when free keys are present.
+- All seven "checks that define done" below are covered by tests or recorded runs: costs change the book as configured; two V2 orders fill in time order at the next bar open; news gating by `published_at`/`available_at`/`released_at`; malformed JSON, late V2 timestamps, unknown symbols and duplicate submissions rejected and recorded; insufficient-inventory sells rejected; replay of `actions.jsonl` reproduces `report.json`; `sim/` never imports `agent/` and the feed raises `FutureAccessError` (HTTP 403) for a future `as_of`.
+
+Decisions taken while building, agreed with the project owner:
+
+| Spec item | What was built | Why |
+| --- | --- | --- |
+| One request per simulated minute | One request per completed **hourly or daily** bar, toggled per run (`interval`). `decision_interval_seconds` on the request reports the real cadence. | Free, verifiable minute data for 2024–2026 does not exist; minute cadence over hourly bars would fabricate resolution. |
+| V2 intraminute activation | V2 `execute_at` is any time inside the bar window; fills at the open of the first bar starting at or after it. | Honest about data resolution: a completed bar's H/L/C are not known at its open. |
+| `MARKET` only | `MARKET` and `LIMIT` (limit waits until marketable, expires after `order_validity_bars`). | Cheap to add; exercises rejection paths. |
+| News eligibility by `published_at`/`available_at`/`released_at` | SEC acceptance time corrected from the API's mislabelled timestamp to real UTC (`sec_acceptance_to_utc`); `available_at` is conservative (06:00 ET on the filing date when acceptance was after hours). `availability_basis` and `acceptance_api_raw` kept for audit. | The EDGAR submissions API labels Eastern local time as `Z`; verified against filing index pages. |
+| Universe | 8 symbols (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, SPY); expansion steps for 20–30 in `config/universe.yaml`. | Start small, keep the data honest. |
+| Sealed testbed | Assumed 2026-07-01 → 2026-07-21 in `config/splits.yaml`. Editable; nothing hardcodes it. | Last complete interval in the collected range. |
+| Engine choice | Local broker behind the JSON contract. HKUDS AI-Trader / Backtrader not adopted. | The local broker already reproduces every check; an external engine would have to match it. |
+
+Still later (unchanged): Zetaris publish of the released feed, Nemotron policy, Meterless, checkpoint restore, live mode, ablations.
 
 ## What this component is
 

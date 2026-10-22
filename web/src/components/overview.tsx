@@ -28,7 +28,7 @@ export function Overview() {
   }, []);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
     const id = setInterval(load, 4000);
     return () => clearInterval(id);
   }, [load]);

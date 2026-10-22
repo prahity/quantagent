@@ -6,7 +6,72 @@ An adaptive trading-agent research system in which **Zetaris builds the market i
 
 The project investigates whether a fixed Nemotron model can make better decisions as Zetaris accumulates eligible market history and Meterless remembers how earlier analyses and decisions worked out. The learned behavior includes what to investigate, which SQL queries to make, and how to turn returned evidence into actions. Its target is the best validated strategy found within a declared budget, with traceable decisions and controlled information access.
 
-**Status:** project design and evaluation specification. The adapters, application and trading experiments described below remain to be implemented and verified. Launch commands should be added when real entry points exist.
+**Status:** the independent simulator/evaluator (build-guide Phase 2) is implemented and runs on real 2024–2026 market data with a scripted test agent and a web interface; see [Running the simulator](#running-the-simulator). The Zetaris, Meterless and Nemotron integrations and the trading experiments described below remain to be implemented and verified.
+
+## Running the simulator
+
+What exists today, all under this repository:
+
+| Path | Role |
+| --- | --- |
+| `sim/` | The environment: snapshot store, as-of gated feed, news queue, broker (fills, costs, limits), V1/V2 order scheduler, engine, metrics, service. Never imports `agent/`. |
+| `contracts/` | The fixed JSON contract (`schema_version` 1.0): decision request, action/order validation, acknowledgement, report. |
+| `agent/` | Deterministic test agents: `hold`, `buy_and_hold`, and `script` (JSON-scripted orders in `agent/scripts/`). Never imports `sim/`. |
+| `runner.py` | CLI that connects an agent to the simulator (in-process or over HTTP) and replays recorded runs. |
+| `server/` | FastAPI runner layer (`/api/runs`, `/api/runs/{id}/actions`, `/api/runs/{id}/feed/...`, autoplay, report, replay). |
+| `web/` | Next.js interface for creating runs, reading the released feed, placing manual orders, driving the test agent and inspecting fills, rejections, decision logs and reports. |
+| `scripts/fetch_data.py` | Collects real data into `sim/snapshot/` (gitignored) and writes `config/snapshot_manifest.json` (committed). |
+| `config/` | `environment.yaml` (K, costs, limits, defaults), `universe.yaml` (symbols + expansion instructions), `splits.yaml` (chronological windows), `snapshot_manifest.json`. |
+| `tests/` | Acceptance checks on real-data fixtures, including the import-boundary check. |
+| `context/simulator.md` | Working notes narrowing the design to this component, plus what was built. |
+
+### Data
+
+No synthetic data. The snapshot covers 2024-01-01 → 2026-07-21 for the universe in `config/universe.yaml`:
+
+- **Prices:** Yahoo Finance chart API, hourly and daily bars (no key required). Hourly history is only served for the trailing ~730 days, so the collector fetches `range=730d` and filters locally.
+- **News/filings:** SEC EDGAR submissions API (no key required; set `SEC_USER_AGENT="name email"` as the SEC asks). Every filing carries `published_at` (acceptance time, corrected to real UTC), a conservative `available_at`, the raw API timestamp and an availability basis, so time gating can be audited.
+- **Optional extra news:** set `ALPHAVANTAGE_API_KEY` and/or `FINNHUB_API_KEY` (free tiers) and the collector adds those articles with the same availability fields. Nemotron web search is reserved for the later live-mode research agent; it is never used to backfill historical news.
+
+```bash
+# one-time: Python env (uv) and data
+uv venv .venv --python 3.12 && uv pip install -e ".[dev]"
+export SEC_USER_AGENT="Your Name you@example.com"
+.venv/bin/python scripts/fetch_data.py             # ~1-2 min; writes sim/snapshot + manifest
+.venv/bin/python scripts/fetch_data.py --fixtures  # same, and also refresh the small test fixtures
+```
+
+### Run it
+
+```bash
+# API (port 8711)
+.venv/bin/uvicorn server.app:app --port 8711 --reload
+
+# Web UI (port 3177); proxies /api/* to the FastAPI server (override with SIM_API_URL)
+cd web && npm install && npm run dev -- --port 3177
+
+# Test agent from the CLI, in-process
+.venv/bin/python runner.py scripts
+.venv/bin/python runner.py run --agent script --script aapl_round_trip --start 2025-01-27 --end 2025-01-31 --symbols AAPL,MSFT
+.venv/bin/python runner.py run --agent buy_and_hold --interval daily --start 2025-01-02 --end 2025-03-31
+.venv/bin/python runner.py replay <run_id>        # recomputes the account from actions.jsonl and compares with report.json
+
+# Tests (real-data fixtures, no network)
+.venv/bin/pytest -q
+```
+
+Each run writes `runs/<run_id>/` with `config.json`, `requests.jsonl`, `actions.jsonl`, `fills.jsonl`, `rejections.jsonl`, `equity.jsonl` and `report.json`. Replay re-executes the recorded actions on a fresh engine and must reproduce the report.
+
+### Behaviour worth knowing
+
+- **Cadence:** one decision request per completed bar (hourly or daily, chosen per run). Bars are visible only once complete; news only once `published_at`, `available_at` and `released_at` are all ≤ `as_of`. Asking the feed for a future `as_of` returns HTTP 403.
+- **Modes:** V1 orders execute at the decision boundary. V2 orders carry an `execute_at` inside the window and fill, in time order, at the open of the first bar starting at or after that time. The web UI's "V1/V2" toggle and the order form's execute-at field exercise both.
+- **Execution:** fill at next bar open, `slippage_bps`, `commission_per_share`/`commission_min`, no shorting by default, `max_position_pct_equity`, `order_validity_bars` expiry, `LIMIT` orders wait until marketable. All in `config/environment.yaml`, overridable per run.
+- **Report:** `net_profit = final_equity - K` after costs, max drawdown, Sharpe (sampling interval stated), turnover, fills, rejections, `environment_version`, `data_version`.
+
+### Expanding the universe to 20–30 symbols
+
+Follow the steps at the top of `config/universe.yaml`: add ticker, SEC CIK and sector; re-run `scripts/fetch_data.py`; re-run `pytest`. Add symbols before early-2024 hourly bars leave Yahoo's 730-day window, and only use a symbol in run windows where it was actually listed under that ticker.
 
 ## Data — Zetaris
 

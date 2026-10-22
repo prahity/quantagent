@@ -54,7 +54,7 @@ export function RunView({ runId }: { runId: string }) {
   }, [runId]);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
     api.config().then(setConfig).catch(() => undefined);
   }, [load]);
 

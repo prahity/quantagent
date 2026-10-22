@@ -1,36 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Simulator web interface
 
-## Getting Started
-
-First, run the development server:
+Next.js (App Router, TypeScript, Tailwind, shadcn/ui, recharts) front end for the independent simulator in this repository. It talks only to the FastAPI runner layer; it never touches the snapshot or the engine directly.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# in the repo root, start the API first
+.venv/bin/uvicorn server.app:app --port 8711 --reload
+
+# then
+cd web
+npm install
+npm run dev -- --port 3177
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://127.0.0.1:3177. Requests to `/api/*` are rewritten to the API (`SIM_API_URL`, default `http://127.0.0.1:8711`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Pages:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `/` — runs table, snapshot card, new-run form (hourly/daily, V1/V2, dates, symbols, K, costs).
+- `/runs/<run_id>` — KPIs, released-feed price chart with fills and a "read one week ahead" probe (expected to be refused), equity and drawdown, news digest, manual order entry, test-agent autoplay, fills, rejections, decision log, report and replay check.
+- `/data` — universe, chronological splits, snapshot coverage, news sources.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Checks: `npx tsc --noEmit` and `npm run lint`.
