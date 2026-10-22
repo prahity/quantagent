@@ -21,6 +21,13 @@ class SnapshotError(RuntimeError):
     pass
 
 
+def _ts(t) -> pd.Timestamp:
+    """Accept pandas Timestamps or stdlib datetimes; always return tz-aware UTC ns."""
+    ts = pd.Timestamp(t)
+    ts = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
+    return ts.as_unit("ns")
+
+
 def _ns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Parquet round-trips at microsecond resolution; all internal arithmetic is in ns UTC."""
     frame = frame.copy()
@@ -147,28 +154,28 @@ class MarketTimeline:
             return self.boundary(step + 1)
         return pd.Timestamp(int(self.boundaries[step] + self.nominal_ns), unit="ns", tz="UTC")
 
-    def open_at(self, symbol: str, t: pd.Timestamp) -> float | None:
+    def open_at(self, symbol: str, t) -> float | None:
         series = self.series.get(symbol)
         if series is None:
             return None
-        idx = series.index_by_ts.get(int(t.value))
+        idx = series.index_by_ts.get(int(_ts(t).value))
         return None if idx is None else float(series.open[idx])
 
-    def last_close_through(self, symbol: str, t: pd.Timestamp) -> tuple[float, pd.Timestamp] | None:
+    def last_close_through(self, symbol: str, t) -> tuple[float, pd.Timestamp] | None:
         """Close of the last bar that completed at or before ``t``."""
         series = self.series.get(symbol)
         if series is None:
             return None
-        idx = int(np.searchsorted(series.bar_end, int(t.value), side="right")) - 1
+        idx = int(np.searchsorted(series.bar_end, int(_ts(t).value), side="right")) - 1
         if idx < 0:
             return None
         return float(series.close[idx]), pd.Timestamp(int(series.ts[idx]), unit="ns", tz="UTC")
 
-    def completed_bars(self, symbol: str, t: pd.Timestamp, limit: int | None = None) -> pd.DataFrame:
+    def completed_bars(self, symbol: str, t, limit: int | None = None) -> pd.DataFrame:
         series = self.series.get(symbol)
         if series is None:
             return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume", "bar_end"])
-        n = int(np.searchsorted(series.bar_end, int(t.value), side="right"))
+        n = int(np.searchsorted(series.bar_end, int(_ts(t).value), side="right"))
         lo = 0 if limit is None else max(0, n - limit)
         return pd.DataFrame(
             {

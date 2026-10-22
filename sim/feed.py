@@ -30,10 +30,11 @@ class Feed:
     def clock(self) -> pd.Timestamp | None:
         return self._clock
 
-    def _check(self, as_of: pd.Timestamp | None) -> pd.Timestamp:
+    def _check(self, as_of) -> pd.Timestamp:
         if self._clock is None:
             raise FutureAccessError("run has not started")
-        as_of = self._clock if as_of is None else as_of
+        as_of = self._clock if as_of is None else pd.Timestamp(as_of)
+        as_of = as_of.tz_convert("UTC") if as_of.tzinfo else as_of.tz_localize("UTC")
         if as_of > self._clock:
             raise FutureAccessError(f"as_of {as_of.isoformat()} is after the run clock {self._clock.isoformat()}")
         return as_of
