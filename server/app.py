@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -148,7 +148,7 @@ def run_state(run_id: str) -> dict:
 
 
 @app.post("/api/runs/{run_id}/actions")
-def submit_action(run_id: str, payload: Any = None) -> dict:
+def submit_action(run_id: str, payload: Any = Body(None)) -> dict:
     return _wrap(service().submit_action, run_id, payload)
 
 

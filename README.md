@@ -22,7 +22,7 @@ What exists today, all under this repository:
 | `web/` | Next.js interface for creating runs, reading the released feed, placing manual orders, driving the test agent and inspecting fills, rejections, decision logs and reports. |
 | `scripts/fetch_data.py` | Collects real data into `sim/snapshot/` (gitignored) and writes `config/snapshot_manifest.json` (committed). |
 | `config/` | `environment.yaml` (K, costs, limits, defaults), `universe.yaml` (symbols + expansion instructions), `splits.yaml` (chronological windows), `snapshot_manifest.json`. |
-| `tests/` | Acceptance checks on real-data fixtures, including the import-boundary check. |
+| `tests/` | Acceptance checks on real-data fixtures, including the import-boundary check and HTTP-level checks of the API. |
 | `context/simulator.md` | Working notes narrowing the design to this component, plus what was built. |
 
 ### Data
