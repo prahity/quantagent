@@ -1,0 +1,14 @@
+#!/bin/sh
+# Keep co-author credit on every commit: prahity <prahityaugand@gmail.com>
+msg_file=$1
+trailer="Co-authored-by: prahity <prahityaugand@gmail.com>"
+
+if [ ! -f "$msg_file" ]; then
+  exit 0
+fi
+
+# Drop a differently named trailer for the same email, then ensure the exact one.
+grep -v '^Co-authored-by: .* <prahityaugand@gmail.com>$' "$msg_file" > "$msg_file.tmp" || exit 0
+mv "$msg_file.tmp" "$msg_file"
+
+printf '\n%s\n' "$trailer" >> "$msg_file"

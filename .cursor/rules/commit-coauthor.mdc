@@ -1,0 +1,12 @@
+---
+description: Co-author every commit as prahity
+alwaysApply: true
+---
+
+Every git commit in this repository must credit Prahit as a co-author. Add this trailer to the commit message, including commits the platform also tags:
+
+```
+Co-authored-by: prahity <prahityaugand@gmail.com>
+```
+
+Use that name and email exactly. Do not substitute a full name, a different email, or a git tag object. Keep the agent as the commit author. If a `Co-authored-by` line for `prahityaugand@gmail.com` is already present under another name, change that line to the trailer above instead of adding a second one.
