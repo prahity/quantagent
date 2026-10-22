@@ -1,0 +1,50 @@
+# Simulator environment defaults. Every value here can be overridden per run
+# through the run config (CLI flags, POST /api/runs, or the web form).
+#
+# Capital and clock are separate settings on purpose:
+#   initial_cash  = K  (money)
+#   time_scale    = s  (simulated seconds per playback second; reported to the agent)
+
+environment_version: "sim-0.1.0"
+
+initial_cash: 10000
+currency: USD
+
+# "hourly" or "daily". Both are real Yahoo Finance bars in the frozen snapshot.
+# One decision request is issued at the start of every bar.
+interval: hourly
+
+# "V1": orders activate at the decision boundary.
+# "V2": the agent schedules activation times inside [window_start, window_end).
+mode: V1
+
+clock:
+  cadence_clock: simulated
+  time_scale: 60
+  # Historical replay pauses the decision clock during inference.
+  pause_during_inference: true
+
+# Execution model over bar data. An order activating at time x fills at the OPEN of
+# the first bar whose start is >= x. execution_resolution_ms is therefore the bar
+# length; the simulator never claims finer fills than the data supports.
+execution:
+  fill_price: next_bar_open
+  commission_per_share: 0.0
+  commission_min: 0.0
+  slippage_bps: 1.0          # applied against the trade: buys pay more, sells receive less
+  allow_shorting: false
+  max_position_pct_equity: 0.25   # per-symbol cap on |position value| / equity at execution time
+  max_orders_per_request: 20
+  order_validity_bars: 1          # unfilled orders expire after this many bars; never carried silently
+
+# Relevance policy for the per-request news digest (news_event_ids).
+news:
+  digest_max_events: 20
+  # Records for held symbols are listed first, then the rest of the universe.
+  prioritize_positions: true
+
+report:
+  # Per-bar returns are used for Sharpe; annualization factor depends on the interval.
+  sharpe_periods_per_year:
+    hourly: 1638   # 6.5 trading hours * 252 days
+    daily: 252

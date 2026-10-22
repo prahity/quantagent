@@ -1,0 +1,14 @@
+{
+  "name": "v2_two_orders",
+  "description": "V2 plan: buy 5 MSFT at +10s and sell 5 MSFT at +45s inside the same window. With bar data both activate on the next bar open, in order; the sell needs the buy's inventory.",
+  "commands": [
+    {
+      "step": 1,
+      "orders": [
+        {"symbol": "MSFT", "side": "BUY", "quantity": 5, "offset_seconds": 10},
+        {"symbol": "MSFT", "side": "SELL", "quantity": 5, "offset_seconds": 45}
+      ],
+      "reason": "scheduled entry and exit using information available at the start of the window"
+    }
+  ]
+}

@@ -1,0 +1,174 @@
+{
+  "bars": {
+    "daily": {
+      "AAPL": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "AMZN": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "GOOGL": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "META": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "MSFT": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "NVDA": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "SPY": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      },
+      "TSLA": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T13:30:00+00:00",
+        "rows": 639
+      }
+    },
+    "hourly": {
+      "AAPL": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "AMZN": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "GOOGL": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "META": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "MSFT": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "NVDA": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      },
+      "SPY": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4445
+      },
+      "TSLA": {
+        "first": "2024-01-02T14:30:00+00:00",
+        "last": "2026-07-21T19:30:00+00:00",
+        "rows": 4446
+      }
+    }
+  },
+  "data_end": "2026-07-21",
+  "data_start": "2024-01-01",
+  "data_version": "snap-17f602c41277a742",
+  "fetched_at": "2026-10-22T05:41:01.831744+00:00",
+  "files": {
+    "bars_daily.parquet": {
+      "bytes": 232812,
+      "sha256": "cc2114448afd621d577cf64e68bc2fe56d201c5bfc39b1def9d422816cab183c"
+    },
+    "bars_hourly.parquet": {
+      "bytes": 1258468,
+      "sha256": "68258d41c8be3c978fc74f65a2caa13794ae42ced3e914444baa311a419a3992"
+    },
+    "news.parquet": {
+      "bytes": 30501,
+      "sha256": "9b930b7fbd4ff186abd440584657d85af8088f2a7fe71039a1a55d70508bfcac"
+    }
+  },
+  "news": {
+    "by_provider": {
+      "sec_edgar": 261
+    },
+    "by_symbol": {
+      "AAPL": {
+        "first": "2024-02-01T21:30:30+00:00",
+        "last": "2026-05-01T10:01:00+00:00",
+        "rows": 34
+      },
+      "AMZN": {
+        "first": "2024-02-01T21:06:02+00:00",
+        "last": "2026-07-09T20:46:08+00:00",
+        "rows": 36
+      },
+      "GOOGL": {
+        "first": "2024-01-30T21:01:26+00:00",
+        "last": "2026-06-11T20:17:04+00:00",
+        "rows": 47
+      },
+      "META": {
+        "first": "2024-01-18T11:00:00+00:00",
+        "last": "2026-05-29T20:16:13+00:00",
+        "rows": 36
+      },
+      "MSFT": {
+        "first": "2024-01-19T21:39:35+00:00",
+        "last": "2026-06-05T14:36:56+00:00",
+        "rows": 31
+      },
+      "NVDA": {
+        "first": "2024-02-21T21:22:09+00:00",
+        "last": "2026-07-02T13:23:16+00:00",
+        "rows": 36
+      },
+      "TSLA": {
+        "first": "2024-01-02T21:29:17+00:00",
+        "last": "2026-07-02T13:01:26+00:00",
+        "rows": 41
+      }
+    },
+    "rows": 261
+  },
+  "sources": {
+    "news": {
+      "alpha_vantage": "only when ALPHAVANTAGE_API_KEY is set; provider timestamps, unverified",
+      "finnhub": "only when FINNHUB_API_KEY is set; provider timestamps, unverified",
+      "sec_edgar": "data.sec.gov/submissions; published_at = acceptance time corrected to true UTC (API value minus ET offset, verified against filing index pages); available_at = acceptance, or 06:00 ET on a later filing date"
+    },
+    "prices": {
+      "intervals": [
+        "hourly (1h, unadjusted)",
+        "daily (1d, adj_close included)"
+      ],
+      "provider": "yahoo_finance_chart_api",
+      "session": "regular hours only"
+    }
+  },
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "TSLA",
+    "SPY"
+  ]
+}

@@ -1,0 +1,50 @@
+# Declared trading universe. The simulator only accepts orders for these symbols,
+# and the data collectors fetch prices and filings for exactly this list.
+#
+# Expanding the universe (target: 20-30 symbols):
+#   1. Add the ticker and its SEC CIK below. Look up CIKs at
+#      https://www.sec.gov/files/company_tickers.json (field cik_str).
+#   2. Re-run `python scripts/fetch_data.py` so the snapshot and manifest cover the new symbols.
+#      Yahoo hourly history is only served for the trailing ~730 days, so add symbols
+#      before early-2024 hourly bars age out of the public window.
+#   3. Re-run `pytest`. Keep `sector` filled in; the relevance digest and later
+#      strategy_performance_by_context joins use it.
+#   4. Keep historical membership honest: do not add a symbol to a run window in which
+#      it was not yet listed or had a different ticker.
+
+data_start: "2024-01-01"
+data_end: "2026-07-21"
+
+symbols:
+  - ticker: AAPL
+    name: Apple Inc.
+    cik: 320193
+    sector: Information Technology
+  - ticker: MSFT
+    name: Microsoft Corporation
+    cik: 789019
+    sector: Information Technology
+  - ticker: NVDA
+    name: NVIDIA Corporation
+    cik: 1045810
+    sector: Information Technology
+  - ticker: AMZN
+    name: Amazon.com, Inc.
+    cik: 1018724
+    sector: Consumer Discretionary
+  - ticker: GOOGL
+    name: Alphabet Inc.
+    cik: 1652044
+    sector: Communication Services
+  - ticker: META
+    name: Meta Platforms, Inc.
+    cik: 1326801
+    sector: Communication Services
+  - ticker: TSLA
+    name: Tesla, Inc.
+    cik: 1318605
+    sector: Consumer Discretionary
+  - ticker: SPY
+    name: SPDR S&P 500 ETF Trust
+    cik: 884394
+    sector: Index ETF

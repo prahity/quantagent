@@ -1,0 +1,8 @@
+{
+  "name": "aapl_round_trip",
+  "description": "Buy 10 AAPL at the first decision, sell all 10 at step 10. Checks fills, costs and inventory accounting on real bars.",
+  "commands": [
+    {"step": 0, "orders": [{"symbol": "AAPL", "side": "BUY", "quantity": 10}], "reason": "scripted entry"},
+    {"step": 10, "orders": [{"symbol": "AAPL", "side": "SELL", "quantity": 10}], "reason": "scripted exit"}
+  ]
+}

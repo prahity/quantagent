@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Frozen market/news snapshot. Fetch with: python scripts/fetch_data.py
+# The pinned manifest (hashes, row counts, coverage) is committed in config/snapshot_manifest.json.
+sim/snapshot/*
+!sim/snapshot/.gitkeep
+
+# Run artifacts (prompts, actions, fills, reports)
+runs/*
+!runs/.gitkeep
+
+# Secrets
+.env
+.env.*
+
+# Web
+web/node_modules/
+web/.next/
+web/out/
+web/*.tsbuildinfo
+web/next-env.d.ts

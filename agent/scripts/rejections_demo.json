@@ -1,0 +1,11 @@
+{
+  "name": "rejections_demo",
+  "description": "Deliberately bad commands so the validation and execution rejections can be inspected: unknown symbol, selling with no inventory, oversized buy, malformed payload, and a V2 timestamp outside the window.",
+  "commands": [
+    {"step": 0, "orders": [{"symbol": "ZZZZ", "side": "BUY", "quantity": 1}], "reason": "unknown symbol -> whole response rejected"},
+    {"step": 1, "orders": [{"symbol": "AAPL", "side": "SELL", "quantity": 3}], "reason": "no inventory -> execution rejection"},
+    {"step": 2, "orders": [{"symbol": "AAPL", "side": "BUY", "quantity": 100000}], "reason": "insufficient cash -> execution rejection"},
+    {"step": 3, "raw": {"schema_version": "1.0", "orders": "not-a-list"}},
+    {"step": 4, "orders": [{"symbol": "AAPL", "side": "BUY", "quantity": 1, "offset_seconds": 999999}], "reason": "V2 timestamp outside window (V1: ignored offset, fills normally)"}
+  ]
+}
