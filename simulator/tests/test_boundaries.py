@@ -19,7 +19,7 @@ def _imports(package: str) -> set[str]:
 
 def test_sim_does_not_import_agent_or_server():
     names = _imports("sim")
-    assert "agent" not in names and "server" not in names
+    assert names.isdisjoint({"agent", "server", "research"})
 
 
 def test_agent_does_not_import_sim_or_server():
@@ -34,7 +34,7 @@ def test_contracts_are_standalone():
 
 def test_no_model_or_browsing_clients_in_sim_runtime():
     runtime = (ROOT / "sim").rglob("*.py")
-    forbidden = {"openai", "anthropic", "requests", "selenium", "playwright"}
+    forbidden = {"openai", "anthropic", "requests", "httpx", "selenium", "playwright"}
     for path in runtime:
         if "data" in path.parts:  # collectors run offline with the ingestion identity
             continue

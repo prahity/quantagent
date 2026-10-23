@@ -11,11 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from contracts.action import Acknowledgement, ActionResponse, OrderOutcome, ValidationError, validate_action
 from contracts.decision_request import Account, Clock, DataRefs, DecisionRequest, Limits, Position
 from contracts.report import EquityPoint, Fill, Rejection, Report
+from contracts.research import LiveCollection, ResearchBrief, ResearchConfig
 from sim.broker import ExecutionConfig, Ledger
 from sim.config import load_environment, universe_symbols
 from sim.feed import Feed
 from sim.metrics import max_drawdown_pct, sharpe, trade_totals, with_drawdown
 from sim.news_queue import NewsQueue
+from sim.research import build_brief
 from sim.scheduler import PendingOrder, Scheduler
 from sim.store import NOMINAL_SECONDS, MarketTimeline, SnapshotStore
 
@@ -23,7 +25,7 @@ from sim.store import NOMINAL_SECONDS, MarketTimeline, SnapshotStore
 class RunConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:8]}")
+    run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:8]}", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
     label: str | None = None
     interval: Literal["hourly", "daily"] = "hourly"
     mode: Literal["V1", "V2"] = "V1"
@@ -38,6 +40,7 @@ class RunConfig(BaseModel):
     news_lookback_days: int = Field(default=90, ge=0, description="How far before start eligible news history is pre-released")
     history_lookback_days: int = Field(default=45, ge=0, description="Completed price history available before the first decision")
     environment_version: str = "sim-0.1.0"
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
 
     @classmethod
     def from_defaults(cls, overrides: dict[str, Any] | None = None) -> "RunConfig":
@@ -78,7 +81,7 @@ class StepRecord(BaseModel):
 
 
 class Engine:
-    def __init__(self, config: RunConfig, store: SnapshotStore):
+    def __init__(self, config: RunConfig, store: SnapshotStore, research_collection: LiveCollection | None = None):
         self.config = config
         self.store = store
         self.execution = ExecutionConfig.from_dict(config.execution)
@@ -114,6 +117,8 @@ class Engine:
         self.held_requests = 0
         self.last_released: list[str] = []
         self._report: Report | None = None
+        self.research_collection = research_collection
+        self.research_briefs: dict[str, ResearchBrief] = {}
 
     # ------------------------------------------------------------------ lifecycle
     def reset(self) -> DecisionRequest:
@@ -223,9 +228,18 @@ class Engine:
             int(self.news_cfg.get("digest_max_events", 20)),
             bool(self.news_cfg.get("prioritize_positions", True)),
         )
+        request_id = f"decision_{self.step:05d}"
+        brief = None
+        if self.config.research.enabled:
+            brief = build_brief(
+                self.feed, config=self.config.research, run_id=self.config.run_id,
+                request_id=request_id, symbols=self.symbols, data_version=self.store.data_version,
+                collection=self.research_collection,
+            )
+            self.research_briefs[request_id] = brief
         return DecisionRequest(
             run_id=self.config.run_id,
-            request_id=f"decision_{self.step:05d}",
+            request_id=request_id,
             mode=self.config.mode,
             as_of=t.to_pydatetime(),
             window_start=t.to_pydatetime(),
@@ -243,6 +257,7 @@ class Engine:
                 workspace_schema=f"agent_{self.config.run_id}",
                 news_event_ids=digest,
                 symbols=self.symbols,
+                research_brief_id=None if brief is None else brief.brief_id,
             ),
             limits=Limits(
                 max_orders_per_request=self.execution.max_orders_per_request,

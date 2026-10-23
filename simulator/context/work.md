@@ -1,5 +1,14 @@
 # Simulator work context
 
+## Research extension
+
+The `feature/simulator-research-agents` branch adds offline research briefs to
+every decision plus separate Exa/Fireworks live collection APIs. See
+`RESEARCH.md` for configuration, tests, timestamps, and replay. Historical
+evaluation still makes no model or web calls. The "not built" notes below
+describe the original simulator handoff; live research collection is now built,
+while live market execution and the full trading-agent stack remain unbuilt.
+
 Handoff for the simulator that was built in this folder. The design documents at the repository root (`README.md`, `AI-Trader-Architecture.md`, `AI-Trader-Build-Guide.txt`) describe the full Zetaris / Meterless / Nemotron agent. This file describes only the environment that was implemented, the choices behind it, and the parts that are still later. The original working spec, including the checks that defined "done", is `context/simulator.md`. How to run it is `README.md` in this folder.
 
 ## Where it sits

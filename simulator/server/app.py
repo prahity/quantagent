@@ -7,12 +7,15 @@ Everything an agent could do over this API is also possible in-process through
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -24,12 +27,17 @@ from sim.config import load_environment, load_splits, load_universe  # noqa: E40
 from sim.feed import FutureAccessError  # noqa: E402
 from sim.service import SimulatorService  # noqa: E402
 from sim.store import SnapshotError, SnapshotStore  # noqa: E402
+from contracts.research import ResearchConfig  # noqa: E402
+from research.providers import ProviderError  # noqa: E402
+from research.service import CollectRequest, ResearchArchive, collect, provider_status  # noqa: E402
 
 app = FastAPI(title="AI Trader Simulator", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _service: SimulatorService | None = None
 _snapshot_error: str | None = None
+_research_archive = ResearchArchive()
+_collection_lock = asyncio.Lock()
 
 
 def service() -> SimulatorService:
@@ -57,6 +65,7 @@ class RunCreate(BaseModel):
     news: dict[str, Any] | None = None
     history_lookback_days: int | None = None
     news_lookback_days: int | None = None
+    research: ResearchConfig | None = None
 
 
 class Autoplay(BaseModel):
@@ -77,6 +86,9 @@ class _LocalFeed:
 
     def marks(self):
         return self._svc.feed_marks(self._run_id)["marks"]
+
+    def research(self, request_id: str | None = None):
+        return self._svc.feed_research(self._run_id, request_id)
 
 
 def _wrap(fn, *args, **kwargs):
@@ -202,6 +214,8 @@ def replay(run_id: str) -> dict:
         return service().replay(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"no recorded run: {exc}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/runs/{run_id}/feed/prices")
@@ -224,3 +238,43 @@ def feed_news(run_id: str, symbols: str | None = None) -> dict:
 @app.get("/api/runs/{run_id}/feed/marks")
 def feed_marks(run_id: str) -> dict:
     return _wrap(service().feed_marks, run_id)
+
+
+@app.get("/api/runs/{run_id}/research")
+def run_research(run_id: str, request_id: str | None = None) -> dict:
+    return {"brief": _wrap(service().feed_research, run_id, request_id)}
+
+
+@app.get("/api/research/providers")
+def research_providers() -> dict:
+    return provider_status()
+
+
+def require_research_token(authorization: str | None = Header(default=None)) -> None:
+    token = os.getenv("RESEARCH_API_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="Live research collection is disabled; set RESEARCH_API_TOKEN on the server.")
+    if authorization is None or not secrets.compare_digest(authorization.encode(), f"Bearer {token}".encode()):
+        raise HTTPException(status_code=401, detail="A valid research collection token is required.")
+
+
+@app.post("/api/research/collections", status_code=201, dependencies=[Depends(require_research_token)])
+async def create_research_collection(body: CollectRequest) -> dict:
+    # Only one collection at a time per server process; avoid accidental request fan-out.
+    if _collection_lock.locked():
+        raise HTTPException(status_code=409, detail="A research collection is already in progress.")
+    async with _collection_lock:
+        names = {row["ticker"]: row["name"] for row in load_universe()["symbols"]}
+        try:
+            collection = await collect(body, names)
+        except ProviderError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        _research_archive.save(collection)
+        return collection.model_dump(mode="json")
+
+
+@app.get("/api/research/collections/{collection_id}", dependencies=[Depends(require_research_token)])
+def research_collection(collection_id: str) -> dict:
+    return _wrap(_research_archive.load, collection_id).model_dump(mode="json")

@@ -10,6 +10,13 @@ The project investigates whether a fixed Nemotron model can make better decision
 
 ## Data — Zetaris
 
+Simulator extension: [research briefs and API integrations](simulator/RESEARCH.md)
+now add cutoff-safe, deterministic research to historical decisions and an
+evaluator-side Exa collection endpoint with optional Fireworks synthesis. Live
+collections retain their actual availability times and cannot be backdated into
+historical runs. These integrations do not replace the planned Zetaris,
+Meterless, or Nemotron trading-agent components.
+
 Zetaris is the full system's primary market-intelligence layer. Trading decisions and strategy revisions use evidence built by joining complementary registered sources through it. The [official platform overview](https://www.zetaris.com/cloud) describes federated access and a semantic layer; our financial views and evaluation protocol are application components to build.
 
 ### Sources and their roles

@@ -17,6 +17,8 @@ runs/*
 # Secrets
 .env
 .env.*
+!.env.example
+research_archive/
 
 # Web
 web/node_modules/

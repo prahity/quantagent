@@ -14,6 +14,7 @@ class FeedReader(Protocol):
     def prices(self, symbol: str, limit: int | None = None) -> list[dict]: ...
     def news(self, symbols: list[str] | None = None) -> list[dict]: ...
     def marks(self) -> dict[str, dict]: ...
+    def research(self, request_id: str | None = None) -> dict | None: ...
 
 
 class HttpFeedReader:
@@ -40,6 +41,12 @@ class HttpFeedReader:
         resp = self._client.get(f"{self._base}/api/runs/{self._run_id}/feed/marks")
         resp.raise_for_status()
         return resp.json()["marks"]
+
+    def research(self, request_id: str | None = None) -> dict | None:
+        params = {"request_id": request_id} if request_id else {}
+        resp = self._client.get(f"{self._base}/api/runs/{self._run_id}/research", params=params)
+        resp.raise_for_status()
+        return resp.json()["brief"]
 
 
 class SimClient:

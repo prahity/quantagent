@@ -17,6 +17,9 @@ Run every command below from this folder.
 | `scripts/fetch_data.py` | Collects real data into `sim/snapshot/` (gitignored) and writes `config/snapshot_manifest.json`. |
 | `config/` | Cash, costs, limits, universe, chronological splits, snapshot manifest. |
 | `tests/` | Acceptance checks on real-data fixtures. |
+| `research/` | Exa live retrieval and optional Fireworks synthesis. |
+| `sim/research.py` | Offline research specialists pinned to each decision cutoff. |
+| `RESEARCH.md` | Research API setup, limits, replay behavior, and demo. |
 | `context/simulator.md` | Working notes for this component. |
 
 ## Data
@@ -25,7 +28,7 @@ No synthetic data. The snapshot covers 2024-01-01 → 2026-07-21 for the univers
 
 - **Prices:** Yahoo Finance chart API, hourly and daily bars. No key. Hourly history is only served for the trailing ~730 days, so the collector fetches `range=730d` and filters locally.
 - **News/filings:** SEC EDGAR submissions API. No key. Set `SEC_USER_AGENT="Your Name you@example.com"` because the SEC asks for a contact in the User-Agent. Each filing keeps its acceptance time, a conservative `available_at`, the raw API timestamp, and an availability basis.
-- **Optional extra news:** set `ALPHAVANTAGE_API_KEY` and/or `FINNHUB_API_KEY` (free tiers) and the collector adds those articles. If the variables are unset, those providers are skipped. Nemotron web search is reserved for the later live-mode research agent.
+- **Optional extra news:** set `ALPHAVANTAGE_API_KEY` and/or `FINNHUB_API_KEY` (free tiers) and the collector adds those articles. If the variables are unset, those providers are skipped. Exa live research is collected separately with current availability timestamps; see [Research](RESEARCH.md).
 
 ```bash
 uv venv .venv --python 3.12 && uv pip install -e ".[dev]"
@@ -54,6 +57,8 @@ The web app proxies `/api/*` to the API (`SIM_API_URL`, default `http://127.0.0.
 Each run writes `runs/<run_id>/` with `config.json`, `requests.jsonl`, `actions.jsonl`, `fills.jsonl`, `rejections.jsonl`, `equity.jsonl`, and `report.json`. Replay re-executes the recorded actions on a fresh engine and must reproduce the report.
 
 ## Behaviour
+
+- Research briefs are generated before each decision from eligible evidence. Read them with `GET /api/runs/{id}/research` or `feed.research(request_id)`. Research logs are saved alongside the normal run artifacts and checked by replay. See [the research guide](RESEARCH.md) for the offline demo and optional Exa/Fireworks APIs.
 
 - One decision request per completed bar (hourly or daily, chosen per run). A bar is visible only once complete. News is visible only once `published_at`, `available_at`, and `released_at` are all ≤ `as_of`. A future `as_of` returns HTTP 403.
 - V1 orders execute at the decision boundary. V2 orders carry an `execute_at` inside the window and fill, in time order, at the open of the first bar starting at or after that time.
