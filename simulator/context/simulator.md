@@ -1,6 +1,6 @@
 # Simulator local context
 
-Working spec for the simulator slice. Source of truth remains `README.md`, `AI-Trader-Architecture.md`, and `AI-Trader-Build-Guide.txt` (pulled at `ec6a48a`). This file narrows those documents to the independent simulator. It is local context, not a change to the design. The sections below the status block are the original working spec; the status block records what was actually built and where it deviates.
+Working spec for the simulator slice. Source of truth for the product design remains `README.md`, `AI-Trader-Architecture.md`, and `AI-Trader-Build-Guide.txt` at the repository root (pulled at `ec6a48a`). This file narrows those documents to the independent simulator. It is local context, not a change to the design. What was actually built, and the choices behind it, is `context/work.md`. The sections below the status block are the original working spec.
 
 ## Status: built
 
