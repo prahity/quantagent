@@ -44,6 +44,7 @@ class DataRefs(BaseModel):
     workspace_schema: str
     news_event_ids: list[str] = Field(default_factory=list, description="Relevance digest of eligible news/context records")
     symbols: list[str] = Field(default_factory=list, description="Symbols that accept orders in this run")
+    research_brief_id: str | None = Field(default=None, description="Read-only brief available through the research feed")
 
 
 class Limits(BaseModel):

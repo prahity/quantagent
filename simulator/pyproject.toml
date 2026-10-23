@@ -22,4 +22,4 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.setuptools]
-packages = ["contracts", "sim", "sim.data", "agent", "server"]
+packages = ["contracts", "sim", "sim.data", "agent", "server", "research"]

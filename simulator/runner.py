@@ -38,6 +38,9 @@ class LocalFeedReader:
     def marks(self) -> dict[str, dict]:
         return self._service.feed_marks(self._run_id)["marks"]
 
+    def research(self, request_id: str | None = None) -> dict | None:
+        return self._service.feed_research(self._run_id, request_id)
+
 
 def run_agent(agent, reset, submit, feed: FeedReader, run_config: dict, verbose: bool = True) -> dict:
     request = reset(run_config)
@@ -67,6 +70,7 @@ def cmd_run(args) -> None:
         "symbols": args.symbols.split(",") if args.symbols else None,
         "label": args.label or f"{args.agent}{(':' + args.script) if args.script else ''}",
         "run_id": args.run_id,
+        "research": {"enabled": not args.no_research, "collection_id": args.research_collection},
     }
     run_config = {k: v for k, v in run_config.items() if v is not None}
     agent = load_agent(args.agent, args.script)
@@ -123,6 +127,8 @@ def main() -> None:
     run.add_argument("--run-id")
     run.add_argument("--server", help="base URL of a running server, e.g. http://127.0.0.1:8711")
     run.add_argument("--quiet", action="store_true")
+    run.add_argument("--no-research", action="store_true", help="disable snapshot research for an ablation")
+    run.add_argument("--research-collection", help="attach a saved live collection; original availability times are enforced")
     run.set_defaults(func=cmd_run)
 
     replay = sub.add_parser("replay", help="replay a recorded run and compare the official result")
