@@ -91,6 +91,37 @@ class ResearchApiTests(unittest.TestCase):
         response = self.client.post("/api/runs", json={**self.run_body, "research": {"collection_id": "../../private"}})
         self.assertEqual(response.status_code, 422)
 
+    def test_saved_exa_sources_can_be_filtered_across_collections(self):
+        batch = collection(datetime(2026, 10, 23, 12, tzinfo=timezone.utc))
+        self.archive.save(batch)
+        other = batch.model_copy(update={"collection_id": "research_" + "b" * 32})
+        self.archive.save(other)
+        with patch.dict("os.environ", {"RESEARCH_API_TOKEN": "test-token"}):
+            headers = {"Authorization": "Bearer test-token"}
+            params = {"day": "2026-10-23", "hour": 12, "time_field": "retrieved_at", "group_by": "day", "limit": 1}
+            out = self.client.get("/api/research/sources", params=params, headers=headers)
+            self.assertEqual(out.status_code, 200, out.text)
+            self.assertEqual(out.json()["total"], 2)
+            self.assertEqual(len(out.json()["records"]), 1)
+            self.assertEqual(out.json()["buckets"], [{"bucket": "2026-10-23", "count": 2}])
+            self.assertEqual(out.json()["records"][0]["retrieved_hour"], "2026-10-23T12:00:00Z")
+            scoped = self.client.get(f"/api/research/collections/{batch.collection_id}/sources", headers=headers)
+            self.assertEqual(scoped.json()["total"], 1)
+            self.assertEqual(self.client.get("/api/research/sources").status_code, 401)
+            for bad in ({"hour": 24}, {"sort_by": "sql"}, {"start": "2025-01-30T00:00:00Z", "end": "2025-01-29T00:00:00Z"}):
+                self.assertEqual(self.client.get("/api/research/sources", params=bad, headers=headers).status_code, 422)
+
+    def test_sorted_run_evidence_never_exposes_future_collection(self):
+        batch = collection(datetime(2026, 10, 23, tzinfo=timezone.utc))
+        self.archive.save(batch)
+        req = self.client.post("/api/runs", json={**self.run_body, "research": {"collection_id": batch.collection_id}}).json()
+        path = f"/api/runs/{req['run_id']}/research/sources"
+        out = self.client.get(path, params={"sort_order": "asc", "group_by": "day", "request_id": req["request_id"]})
+        self.assertEqual(out.status_code, 200, out.text)
+        self.assertTrue(out.json()["records"])
+        self.assertFalse(any(r["kind"] == "web" for r in out.json()["records"]))
+        self.assertEqual(self.client.get(path, params={"request_id": "decision_99999"}).status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

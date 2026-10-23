@@ -96,6 +96,62 @@ belong to `config/universe.yaml`; arbitrary queries and historical cutoffs are r
 
 ## Time safety and replay
 
+### Organize, sort, and filter every retrieved record by day and hour
+
+Exa requests explicitly prioritize original publication timestamps for UTC day/hour
+organization. The application derives and saves `published_day` and
+`published_hour` on every evidence record, plus equivalent `available_*`,
+`released_*`, and `retrieved_*` buckets. For example, a publication timestamp of
+`2026-10-22T14:35:12Z` produces day `2026-10-22` and hour
+`2026-10-22T14:00:00Z`. All timestamps and buckets use UTC. Source timestamps are
+preserved at full precision; buckets never replace eligibility checks. Records
+with no retrieval timestamp have null retrieval buckets. Incorrect caller-supplied
+buckets are rejected. Older archive records acquire these fields when loaded.
+
+Three GET endpoints expose the same organization and query options:
+
+| Endpoint | Scope |
+| --- | --- |
+| `/api/research/sources` | Every saved Exa collection; requires operator bearer token |
+| `/api/research/collections/{collection_id}/sources` | One saved collection; requires operator bearer token |
+| `/api/runs/{run_id}/research/sources` | Already-emitted research evidence, with optional `request_id`; simulator cutoff still enforced |
+
+Supported parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `day=2026-10-22&hour=14` | Exact UTC day and hour (hour is 0–23); either filter may be used alone |
+| `start=...&end=...` | Time-zone-aware timestamp range; start inclusive, end exclusive |
+| `time_field=published_at` | Filter and group by `published_at`, `available_at`, `released_at`, or `retrieved_at` |
+| `symbol=AAPL&provider=exa&kind=web` | Filter records by company, provider, or evidence kind |
+| `text=earnings` | Case-insensitive search of title/content |
+| `group_by=hour` | Return hour or day buckets, including counts across all filtered results |
+| `sort_by=published_at&sort_order=desc` | Ascending/descending timestamp, symbol, or provider ordering; stable ties and nulls last |
+| `offset=0&limit=100` | Paginate records; limit is capped at 500 |
+
+```bash
+curl -G http://127.0.0.1:8711/api/research/sources \
+  -H "Authorization: Bearer $RESEARCH_API_TOKEN" \
+  --data-urlencode 'day=2026-10-22' \
+  --data-urlencode 'hour=14' \
+  --data-urlencode 'symbol=AAPL' \
+  --data-urlencode 'time_field=published_at' \
+  --data-urlencode 'group_by=hour' \
+  --data-urlencode 'sort_by=published_at' \
+  --data-urlencode 'sort_order=asc'
+```
+
+The response includes `timezone`, `time_field`, `buckets`, `total`, and paginated
+`records`. Archive-wide results retain `collection_id`, including repeated source
+versions collected in separate batches. Buckets contain observed records only;
+empty hours do not imply a completed search of that hour. Exa search results are
+bounded samples, not exhaustive coverage of all market news. Date-only/undated
+provider results are excluded rather than assigned an invented publication hour.
+Archive-wide queries scan saved JSON collections; a database index can be added
+if collection volume outgrows this hackathon-scale implementation.
+
+### Keep publication and availability separate
+
 Publication-date filters do not prove that today's page content existed in the
 past. Undated, invalid, future, and out-of-window search results are excluded.
 Retrieved versions are hashed and stamped with actual retrieval times. Derived

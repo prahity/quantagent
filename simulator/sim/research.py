@@ -11,7 +11,7 @@ import math
 
 from pydantic import ValidationError
 
-from contracts.research import Evidence, Finding, LiveCollection, ResearchBrief, ResearchConfig
+from contracts.research import Evidence, Finding, LiveCollection, ResearchBrief, ResearchConfig, TIME_BUCKET_FIELDS
 from sim.feed import Feed
 
 
@@ -95,6 +95,6 @@ def build_brief(feed: Feed, *, config: ResearchConfig, run_id: str, request_id: 
                 collection_id=collection.collection_id if collection is not None else None,
                 synthesis_model=collection.synthesis_model if collection is not None and collection.available_at <= cutoff else None,
                 sources=sources, findings=findings, gaps=gaps)
-    digest = hashlib.sha256(json.dumps(body, default=lambda x: x.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(body, default=lambda x: x.model_dump(mode="json", exclude=TIME_BUCKET_FIELDS)
                                       if hasattr(x, "model_dump") else x.isoformat(), sort_keys=True).encode()).hexdigest()[:20]
     return ResearchBrief(brief_id=f"brief_{digest}", **body)

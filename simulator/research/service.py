@@ -101,7 +101,8 @@ async def collect(request: CollectRequest, company_names: dict[str, str],
             await client.aclose()
     return LiveCollection(
         collection_id=f"research_{uuid.uuid4().hex}", symbols=symbols,
-        started_at=started, available_at=datetime.now(timezone.utc), sources=sources,
+        started_at=started, available_at=datetime.now(timezone.utc),
+        sources=sorted(sources, key=lambda source: (source.published_at, source.source_id)),
         findings=findings, warnings=warnings, synthesis_model=model, search_calls=len(jobs),
         status="empty" if not sources else "partial" if warnings else "complete",
     )

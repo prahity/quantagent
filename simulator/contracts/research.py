@@ -1,10 +1,13 @@
 """Versioned, sourced research context. Research never contains executable orders."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, HttpUrl, model_validator
+
+TIME_BUCKET_FIELDS = {f"{name}_{bucket}" for name in ("published", "available", "released", "retrieved")
+                      for bucket in ("day", "hour")}
 
 
 class ResearchConfig(BaseModel):
@@ -30,6 +33,30 @@ class Evidence(BaseModel):
     released_at: AwareDatetime
     retrieved_at: AwareDatetime | None = None
     provider: str
+    published_day: date | None = None
+    published_hour: AwareDatetime | None = None
+    available_day: date | None = None
+    available_hour: AwareDatetime | None = None
+    released_day: date | None = None
+    released_hour: AwareDatetime | None = None
+    retrieved_day: date | None = None
+    retrieved_hour: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def utc_time_buckets(self):
+        """Derive UTC buckets from source timestamps; never let callers invent them."""
+        for name in ("published", "available", "released", "retrieved"):
+            timestamp = getattr(self, f"{name}_at")
+            timestamp = timestamp.astimezone(timezone.utc) if timestamp is not None else None
+            setattr(self, f"{name}_at", timestamp)
+            values = {"day": timestamp.date() if timestamp else None,
+                      "hour": timestamp.replace(minute=0, second=0, microsecond=0) if timestamp else None}
+            for bucket, expected in values.items():
+                supplied = getattr(self, f"{name}_{bucket}")
+                if supplied is not None and supplied != expected:
+                    raise ValueError(f"{name}_{bucket} must match its UTC timestamp")
+                setattr(self, f"{name}_{bucket}", expected)
+        return self
 
     def eligible(self, cutoff: datetime) -> bool:
         times = [self.published_at, self.available_at, self.released_at]

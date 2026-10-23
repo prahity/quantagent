@@ -45,6 +45,8 @@ class ExaSearch:
             "startPublishedDate": (now - timedelta(days=lookback_days)).isoformat(),
             "endPublishedDate": now.isoformat(),
             "contents": {"text": {"maxCharacters": 2000}},
+            "objective": "Retrieve timestamped market evidence for chronological organization by UTC day and hour. "
+                         "Prioritize sources with explicit original publication timestamps; do not infer missing publication hours.",
         }
         data = await _post(self.client, "Exa", EXA_URL,
                            headers={"x-api-key": self.key}, json=payload)
@@ -78,6 +80,7 @@ class ExaSearch:
                 sources.append(source)
             except (KeyError, TypeError, ValueError, ValidationError):
                 excluded += 1
+        sources.sort(key=lambda source: (source.published_at, source.source_id))
         return sources, excluded
 
 

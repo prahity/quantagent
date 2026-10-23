@@ -28,6 +28,8 @@ from sim.feed import FutureAccessError  # noqa: E402
 from sim.service import SimulatorService  # noqa: E402
 from sim.store import SnapshotError, SnapshotStore  # noqa: E402
 from contracts.research import ResearchConfig  # noqa: E402
+from contracts.research import Evidence  # noqa: E402
+from sim.research_query import EvidenceQuery, RunEvidenceQuery, query_evidence  # noqa: E402
 from research.providers import ProviderError  # noqa: E402
 from research.service import CollectRequest, ResearchArchive, collect, provider_status  # noqa: E402
 
@@ -278,3 +280,21 @@ async def create_research_collection(body: CollectRequest) -> dict:
 @app.get("/api/research/collections/{collection_id}", dependencies=[Depends(require_research_token)])
 def research_collection(collection_id: str) -> dict:
     return _wrap(_research_archive.load, collection_id).model_dump(mode="json")
+
+
+@app.get("/api/research/sources", dependencies=[Depends(require_research_token)])
+def research_sources(query: EvidenceQuery = Query()) -> dict:
+    """Sort/filter Exa evidence across all saved collections by UTC day and hour."""
+    return _wrap(_research_archive.sources, query)
+
+
+@app.get("/api/research/collections/{collection_id}/sources", dependencies=[Depends(require_research_token)])
+def collection_sources(collection_id: str, query: EvidenceQuery = Query()) -> dict:
+    return _wrap(_research_archive.sources, query, collection_id)
+
+
+@app.get("/api/runs/{run_id}/research/sources")
+def run_research_sources(run_id: str, query: RunEvidenceQuery = Query()) -> dict:
+    brief = _wrap(service().feed_research, run_id, query.request_id)
+    rows = [{"source": Evidence.model_validate(source)} for source in brief["sources"]] if brief else []
+    return query_evidence(rows, query)

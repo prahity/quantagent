@@ -16,7 +16,7 @@ import httpx
 import pandas as pd
 from pydantic import ValidationError
 
-from contracts.research import Evidence, Finding, LiveCollection
+from contracts.research import Evidence, Finding, LiveCollection, TIME_BUCKET_FIELDS
 from research.providers import ExaSearch, FireworksSynthesis, ProviderError
 from research.service import CollectRequest, collect
 from sim.engine import RunConfig
@@ -175,6 +175,15 @@ class SnapshotResearchTests(unittest.TestCase):
             req = self.svc.submit_action(run_id, action(req))["next_request"]
         research_path = self.root / "runs" / run_id / "research.jsonl"
         lines = research_path.read_text().splitlines()
+        # Older logs lack derived day/hour fields; filling them must preserve replay.
+        for index, line in enumerate(lines):
+            legacy = json.loads(line)
+            for source in legacy["sources"]:
+                for field in TIME_BUCKET_FIELDS:
+                    source.pop(field, None)
+            lines[index] = json.dumps(legacy)
+        research_path.write_text("\n".join(lines) + "\n")
+        self.assertTrue(self.svc.replay(run_id)["research_match"])
         changed = json.loads(lines[0])
         changed["gaps"].append("tampered")
         research_path.write_text(json.dumps(changed) + "\n" + "\n".join(lines[1:]) + "\n")

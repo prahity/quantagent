@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 from contracts.research import LiveCollection
+from sim.research_query import EvidenceQuery, query_evidence
 
 ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "research_archive"
 
@@ -26,3 +27,11 @@ class ResearchArchive:
         if collection.collection_id != collection_id:
             raise ValueError("collection id mismatch")
         return collection
+
+    def sources(self, query: EvidenceQuery, collection_id: str | None = None) -> dict:
+        # Immutable JSON collections remain the source of truth. No index can go stale.
+        collections = [self.load(collection_id)] if collection_id else [
+            self.load(path.stem) for path in sorted(self.root.glob("research_*.json"))]
+        rows = [{"source": source, "collection_id": batch.collection_id}
+                for batch in collections for source in batch.sources]
+        return query_evidence(rows, query)

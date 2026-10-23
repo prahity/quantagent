@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from contracts.research import LiveCollection
+from contracts.research import LiveCollection, ResearchBrief
 from sim.config import RUNS_DIR
 from sim.engine import Engine, RunConfig
 from sim.research_archive import ResearchArchive
@@ -159,7 +159,8 @@ class SimulatorService:
         research_path = run_dir / "research.jsonl"
         research_match = False if config_data.get("research", {}).get("enabled", False) else None
         if research_path.exists():
-            recorded = [json.loads(line) for line in research_path.read_text().splitlines() if line.strip()]
+            recorded = [ResearchBrief.model_validate_json(line).model_dump(mode="json")
+                        for line in research_path.read_text().splitlines() if line.strip()]
             research_match = recorded == [_dump(b) for b in engine.research_briefs.values()]
         return {
             "run_id": run_id,
