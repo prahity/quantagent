@@ -1,0 +1,10 @@
+# Secrets and local environment
+.env
+.venv/
+
+# Per-run artifacts written by the agent runner
+runs/
+
+# Python caches
+__pycache__/
+*.pyc
