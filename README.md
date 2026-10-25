@@ -6,7 +6,7 @@ An adaptive trading-agent research system in which **Zetaris builds the market i
 
 The project investigates whether a fixed Nemotron model can make better decisions as Zetaris accumulates eligible market history and Meterless remembers how earlier analyses and decisions worked out. The learned behavior includes what to investigate, which SQL queries to make, and how to turn returned evidence into actions. Its target is the best validated strategy found within a declared budget, with traceable decisions and controlled information access.
 
-**Status:** the independent simulator/evaluator (build-guide Phase 2) is implemented in [`simulator/`](simulator/README.md) and runs on real 2024–2026 market data. That folder is only the market environment, its scripted test harness, and its web UI. The Zetaris, Meterless, and Nemotron agent code described below remains to be implemented at the repository root.
+**Status:** the simulator is in [`simulator/`](simulator/README.md) and runs on real 2024–2026 market data. The Meterless client, the Nemotron trader, and the SQL adapter are in [`meterless/`](meterless/README.md). Setup for a new machine, including every file git leaves out, is [`context/session-handoff.md`](context/session-handoff.md). The sections below are the research design. Zetaris views are selected with `ANALYSIS_BACKEND=zetaris`; the default backend is the local sqlite snapshot.
 
 ## Data — Zetaris
 

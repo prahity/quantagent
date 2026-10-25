@@ -36,6 +36,12 @@ def test_add_appends_and_drop_removes_only_the_named_rule():
     assert "r3: Deploy cash when a name is trending up." in updated
 
 
+def test_an_amend_of_a_missing_rule_is_saved_as_a_new_rule():
+    updated = apply("", json.dumps({"amend": [{"id": "r1", "text": "Buy when the close is higher than the prior close.", "evidence": "2024-01 the agent held cash. Unproven."}]}))
+    assert updated.startswith("r1: Buy when the close is higher than the prior close.")
+    assert "2024-01 the agent held cash. Unproven." in updated
+
+
 def test_a_rewritten_notebook_is_rejected():
     with pytest.raises(ValueError):
         apply(NOTES, "r1: A completely new notebook.\nr2: Another new rule.")

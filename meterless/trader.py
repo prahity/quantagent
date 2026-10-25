@@ -1,8 +1,10 @@
 """One trading decision through Meterless. Nightshift selects the Nemotron lane.
 
-The model sees only the decision request the simulator already released. It must
-answer with the fixed action JSON. A reply that is not that JSON becomes a hold,
-which the simulator records. The model does not choose the fill price.
+The model sees only the decision request the simulator already released. It
+answers with orders and a reason. ``structure_action`` copies the request ids
+and window onto that reply, and ``fit_orders`` shrinks a buy that would exceed
+cash or the position cap. A reply that is not JSON becomes a hold, which the
+simulator records. The model does not choose the fill price.
 """
 from __future__ import annotations
 
@@ -11,16 +13,14 @@ import re
 import time
 from typing import Any
 
+from meterless.action import fit_orders, structure_action
 from meterless.provider import MeterlessRuntime
 from meterless.query import AnalysisSource, QueryRequest, QueryResult
 
-_PROMPT = """You are the trading agent in a market simulator. Your goal is to maximize net profit by the last step of the run. Open positions are marked at the final close. Decide what to do at this step from the account, the recent completed bars, and the released filings below.
-Reply with one JSON object and no other text, in this shape:
-{"schema_version":"1.0","run_id":<copy>,"request_id":<copy>,"mode":<copy>,"window_start":<copy>,"window_end":<copy>,"orders":[<order>, ...],"reason":<one or two sentences explaining this decision>}
-Copy run_id, request_id, mode, window_start, and window_end from the request unchanged.
-orders may be empty, which means hold. Each order is {"order_id":<unique string>,"execute_at":<timestamp>,"symbol":<symbol>,"side":"BUY" or "SELL","quantity":<whole shares>,"order_type":"MARKET" or "LIMIT","limit_price":<number, or null for MARKET>}.
-For V1, execute_at must equal window_start. For V2, execute_at must be inside the window.
-MARKET orders fill at the open of the next bar. A BUY must fit in cash, no position may exceed max_position_pct_equity of equity, and you can only SELL shares you hold. Size quantity from the latest close in recent_bars.
+_PROMPT = """You are the trading agent in a market simulator. Your goal is to end the window with more cash. Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. If you hold no shares and recent closes are higher than earlier ones, buy.
+Reply with one JSON object and no other text:
+{"orders":[{"symbol":"AAPL","side":"BUY","quantity":10,"order_type":"MARKET"}],"reason":"one or two sentences"}
+orders may be empty, which means hold. side is BUY or SELL. quantity is whole shares sized from the latest close so the position stays within max_position_pct_equity. order_type MARKET needs no limit price. A BUY must fit in cash. You can only SELL shares you hold.
 Use only the symbols, prices, and filings given here. Do not assume anything after as_of.
 
 Request:
@@ -53,6 +53,18 @@ def _json_object(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _closes(visible: dict) -> dict[str, float]:
+    prices = {}
+    for symbol, bars in (visible.get("recent_bars") or {}).items():
+        if bars:
+            prices[symbol] = float(bars[-1]["close"])
+    return prices
+
+
+def _ready(parsed: dict, request: dict, visible: dict) -> dict:
+    return fit_orders(structure_action(parsed, request), request, _closes(visible))
 
 
 def _hold(request: dict, reason: str) -> dict:
@@ -197,8 +209,7 @@ class NemotronTrader:
             parsed = _json_object(text)
             if parsed is None:
                 return _hold(request, "model reply was not the action JSON")
-            parsed["reason"] = str(parsed.get("reason") or "nemotron")[:2000]
-            return parsed
+            return _ready(parsed, request, visible)
 
         found: list[QueryResult] = []
         for _ in range(_QUERY_LIMIT):
@@ -220,8 +231,9 @@ class NemotronTrader:
                 found.append(result)
                 continue
             if "orders" in parsed:
-                parsed["reason"] = self._ground_reason(str(parsed.get("reason") or "nemotron"), visible, found)
-                return parsed
+                action = _ready(parsed, request, visible)
+                action["reason"] = self._ground_reason(action["reason"], visible, found)
+                return action
             break
         text = self._complete(self._query_prompt(visible, found) + "\nReply with the action JSON only.", request)
         if isinstance(text, dict):
@@ -229,5 +241,6 @@ class NemotronTrader:
         parsed = _json_object(text)
         if parsed is None or "orders" not in parsed:
             return _hold(request, "model reply was not the action JSON")
-        parsed["reason"] = self._ground_reason(str(parsed.get("reason") or "nemotron"), visible, found)
-        return parsed
+        action = _ready(parsed, request, visible)
+        action["reason"] = self._ground_reason(action["reason"], visible, found)
+        return action

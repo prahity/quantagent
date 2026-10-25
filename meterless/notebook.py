@@ -15,7 +15,7 @@ _FIELDS = {"add", "amend", "drop"}
 _MAX_ADDS = 2
 _MAX_TEXT = 400
 
-_PROMPT = """You update the strategy notebook for an AI trading agent. It trades US large-cap stocks and ETFs on daily bars, long only. The simulator allows up to 25% of equity per position, and market orders fill at the next open.
+_PROMPT = """You update the strategy notebook for an AI trading agent. Its goal is to end the next window with more cash. Cash and open positions are both counted at the final close. It trades US large-cap stocks and ETFs on daily bars, long only. The simulator allows up to 25% of equity per position, and market orders fill at the next open.
 Below are the current notebook and the record of the period that just finished. The record's numbers were computed by the simulator: returns, profit by symbol, average share of equity invested, days fully in cash, and buy-and-hold of the same symbols.
 
 Return one JSON object and no other text:
@@ -24,8 +24,8 @@ Return one JSON object and no other text:
 Rules:
 - A rule you do not name stays exactly as written. Do not restate it, renumber it, or return the notebook.
 - Omit add, amend, or drop when you have nothing for that list. {{}} keeps the notebook unchanged.
-- add at most {max_adds} rules. Mark each new rule unproven in its evidence. One period does not prove a rule.
-- amend only a rule this period's numbers change. New evidence is appended. Earlier evidence stays. Include text only when the instruction itself must change.
+- add at most {max_adds} rules. If the notebook is empty, use add. Mark each new rule unproven in its evidence. One period does not prove a rule.
+- amend a rule this period's numbers change. New evidence is appended. Earlier evidence stays. Include text only when the instruction itself must change. An amend for an id that is not in the notebook is saved as a new rule.
 - drop only when this period's numbers contradict that rule. Quote those numbers in because.
 - Quote only numbers that appear in the record or the current notebook. Do not estimate or invent any figure.
 - When buy-and-hold beat the agent while average_invested_pct_of_equity was low, the cause was idle cash. Address it. Do not add caution.
@@ -145,6 +145,16 @@ def apply(notes: str, raw: str) -> str:
     adds = _entries(data, "add")
     amends = _entries(data, "amend")
     drops = _entries(data, "drop")
+    kept_amends = []
+    for entry in amends:
+        if entry.get("id") in by_id:
+            kept_amends.append(entry)
+            continue
+        text = _line(entry, "text", required=False) or _line(entry, "evidence", required=False)
+        evidence = _line(entry, "evidence", required=False) or "unproven"
+        if text:
+            adds.append({"text": text, "evidence": evidence})
+    amends = kept_amends
     if len(adds) > _MAX_ADDS:
         raise ValueError(f"an update may add at most {_MAX_ADDS} rules")
 

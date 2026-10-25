@@ -2,6 +2,8 @@
 
     python trial.py --out ../context/trials/monthly --model nvidia/nemotron-3.5-lightning-30b-a3b
 
+``--days 30 --start 2024-01-16`` runs one window of calendar days instead of months.
+
 Each calendar month is its own run at the same starting cash. The ``memory`` arm
 keeps a short in-run order log and a strategy notebook that Nemotron updates
 through Meterless after each month ends, so month M only sees notes written from
@@ -20,7 +22,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -41,6 +43,13 @@ METRICS = ["run_id", "return_pct", "net_profit", "max_drawdown_pct", "sharpe", "
 _write_lock = threading.Lock()
 
 
+def one_window(start: str, days: int) -> list[tuple[str, str, str]]:
+    """One evaluation window of ``days`` calendar days, inclusive of ``start``."""
+    first = date.fromisoformat(start)
+    end = min(first + timedelta(days=days - 1), DATA_END)
+    return [(f"{first.isoformat()}+{days}d", first.isoformat(), end.isoformat())]
+
+
 def months(first: str, last: str) -> list[tuple[str, str, str]]:
     y, m = map(int, first.split("-"))
     ly, lm = map(int, last.split("-"))
@@ -56,7 +65,7 @@ def simulate(agent, cfg: dict) -> tuple[dict, SimulatorService]:
     service = SimulatorService()
     first = service.reset(cfg)
     feed = LocalFeedReader(service, first["run_id"])
-    report = run_agent(agent, lambda _cfg: first, service.submit_action, feed, cfg, verbose=False)
+    report = run_agent(agent, lambda _cfg: first, service.submit_action, feed, cfg, verbose=True)
     return report, service
 
 
@@ -137,6 +146,8 @@ def main() -> None:
     parser.add_argument("--model", default="nvidia/nemotron-3.5-lightning-30b-a3b")
     parser.add_argument("--first", default="2024-01")
     parser.add_argument("--last", default="2026-07")
+    parser.add_argument("--days", type=int, default=0, help="one window of this many calendar days, instead of calendar months")
+    parser.add_argument("--start", default="2024-01-02", help="first calendar day when --days is set")
     parser.add_argument("--symbols", default="AAPL,MSFT,SPY")
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--in-run-memory", type=int, default=5)
@@ -154,6 +165,7 @@ def main() -> None:
         done = {(r["arm"], r["month"]) for r in map(json.loads, (out / "results.jsonl").read_text().splitlines())}
 
     settings = load_settings()
+    periods = one_window(args.start, args.days) if args.days else months(args.first, args.last)
 
     extra = {} if args.thinking == "on" else {"chat_template_kwargs": {"enable_thinking": False}}
 
@@ -185,7 +197,7 @@ def main() -> None:
 
     def memory_arm(analysis) -> None:
         notes = ""
-        for month, start, end in months(args.first, args.last):
+        for month, start, end in periods:
             path = out / "notebook" / f"{month}.md"
             if ("memory", month) in done:
                 notes = path.read_text() if path.exists() else notes
@@ -217,7 +229,7 @@ def main() -> None:
         threads.append(threading.Thread(target=memory_arm, args=(analysis,)))
         threads[-1].start()
     if "nomem" in arms:
-        todo = [m for m in months(args.first, args.last) if ("nomem", m[0]) not in done]
+        todo = [m for m in periods if ("nomem", m[0]) not in done]
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             list(pool.map(nomem_month, todo))
     for t in threads:

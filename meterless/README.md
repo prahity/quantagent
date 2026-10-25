@@ -20,7 +20,7 @@ python -m meterless --say "Reply with one sentence confirming this connection wo
 
 `unauthorized` means the runtime answered and rejected the token, including the placeholder `rt-local`. `offline` means it did not answer with Meterless model ids. A `/healthz` response alone is not treated as connected.
 
-`NemotronTrader` sends one simulator decision request to that route and expects the fixed action JSON back. A reply that is not that JSON is a hold.
+`NemotronTrader` asks the model for orders and a reason. `meterless/action.py` copies `run_id`, `request_id`, `mode`, and the window from the simulator request, drops extra fields, and shrinks a buy that would exceed cash or `max_position_pct_equity`. A reply that is not JSON is a hold. The model does not set the fill price.
 
 ## Swapping the SQL backend for Zetaris
 

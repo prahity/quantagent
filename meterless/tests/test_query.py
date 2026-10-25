@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from meterless.action import fit_orders, structure_action
 from meterless.query import QueryRequest, SqliteSource, ZetarisSource, open_analysis_source
 from meterless.trader import NemotronTrader
 
@@ -97,6 +98,40 @@ def test_trader_binds_the_simulator_cutoff_and_drops_an_invented_figure(tmp_path
     assert action["reason"].startswith("decision follows SQL results")
     assert trader.queries[0].as_of == "2024-01-03T14:30:00Z"
     assert trader.queries[0].rows[0]["close"] == 185.64
+
+
+def test_structure_action_keeps_orders_and_fills_ids_from_the_request():
+    request = {
+        "run_id": "run_real", "request_id": "decision_00007", "mode": "V1",
+        "window_start": "2024-01-16T14:30:00Z", "window_end": "2024-01-17T14:30:00Z",
+    }
+    action = structure_action({
+        "run_id": "run_other", "as_of": "nope", "limit_price": None,
+        "orders": [{"symbol": "aapl", "side": "buy", "quantity": "10", "order_type": "MARKET", "limit_price": 1}],
+        "reason": "rising close",
+    }, request)
+    assert action["run_id"] == "run_real"
+    assert action["request_id"] == "decision_00007"
+    assert action["window_start"] == "2024-01-16T14:30:00Z"
+    assert "as_of" not in action
+    order = action["orders"][0]
+    assert order["symbol"] == "AAPL"
+    assert order["side"] == "BUY"
+    assert order["quantity"] == 10
+    assert order["execute_at"] == "2024-01-16T14:30:00Z"
+    assert order["limit_price"] is None
+
+
+def test_fit_orders_shrinks_a_buy_to_the_position_cap():
+    request = {
+        "account": {"cash": 10000, "equity": 10000, "positions": []},
+        "limits": {"max_position_pct_equity": 0.25, "slippage_bps": 1},
+    }
+    action = fit_orders({
+        "orders": [{"symbol": "AAPL", "side": "BUY", "quantity": 500, "order_type": "MARKET", "limit_price": None}],
+        "reason": "rising",
+    }, request, {"AAPL": 190.0})
+    assert action["orders"][0]["quantity"] == 12
 
 
 def test_open_rejects_an_unknown_backend(tmp_path):
