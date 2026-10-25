@@ -276,7 +276,8 @@ def main() -> None:
     parser.add_argument("--symbols", help="comma-separated subset of the universe")
     parser.add_argument("--cash", type=float, default=None)
     parser.add_argument("--data", default="auto", choices=["auto", "snapshot", "fixtures"])
-    parser.add_argument("--backend", default=None, choices=["sqlite", "zetaris"])
+    parser.add_argument("--backend", default=None, choices=["sqlite", "zetaris"],
+                        help="default: QUERY_BACKEND from .env (sqlite if unset)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 

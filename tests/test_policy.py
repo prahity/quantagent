@@ -62,6 +62,16 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(len(log), 1)
         self.assertEqual(log[0]["row_count"], 2)
 
+    def test_system_prompt_names_the_sql_engine(self):
+        req = stub_request("V1", as_of=AS_OF, symbols=["AAPL"])
+        model = FakeModel([json.dumps({"type": "decision", "orders": [], "reason": "flat"})])
+        policy = NemotronPolicy(model, self.dir / "workspace", architecture_text="")
+        policy.start_run("run_test", req)
+        policy.decide(req, self._tool(req), self.memory)
+        system = model.calls[0][0]["content"]
+        self.assertIn("SQL ENGINE: SQLite.", system)
+        self.assertIn("compare them as strings", system)
+
     def test_invalid_decision_falls_back_to_hold(self):
         req = stub_request("V1", as_of=AS_OF, symbols=["AAPL"])
         model = FakeModel([

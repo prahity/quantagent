@@ -52,7 +52,7 @@ class SimulatorIntegrationTest(unittest.TestCase):
                 "momentum", minutes=12,
                 run_config={"run_id": f"det{i}", "start": "2025-01-28", "end": "2025-01-31",
                              "symbols": ["AAPL", "MSFT", "SPY"], "interval": "hourly"},
-                service=svc, verbose=False,
+                service=svc, verbose=False, backend_kind="sqlite",
             )
             results.append(summary)
         a, b = results

@@ -41,6 +41,10 @@ class ModelConfig:
     top_p: float = 1.0
     max_tokens: int = 1024
     timeout_s: float = 60.0
+    # Nemotron 3.x reasons before answering; with thinking on, max_tokens is consumed by
+    # reasoning and content comes back empty. None = don't send the flag (for endpoints
+    # that reject chat_template_kwargs).
+    enable_thinking: bool | None = False
 
     # Retry policy for 429 / 5xx.
     max_retries: int = 4

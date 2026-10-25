@@ -120,6 +120,7 @@ class NemotronPolicy:
             _RULES
             + "\n\nOPERATING BRIEF:\n" + self.brief
             + "\n\nREADABLE TABLES:\n" + table_descriptions()
+            + "\n\n" + _sql_engine_note(getattr(query_tool.backend, "dialect", "SQLite"))
         )
         user = (
             "DECISION REQUEST:\n" + json.dumps(_prompt_request(request), indent=2)
@@ -166,6 +167,15 @@ class NemotronPolicy:
             messages.append({"role": "user", "content": "Unknown 'type'. Use 'query' or 'decision'."})
 
         return contract.hold(request, "no valid decision within the step budget")
+
+
+def _sql_engine_note(dialect: str) -> str:
+    """Same guidance on every backend; only the engine name differs."""
+    return (
+        f"SQL ENGINE: {dialect}. Timestamps are ISO-8601 UTC strings; compare them as strings. "
+        "Prefer portable SQL; avoid engine-specific date functions "
+        "(e.g. SQLite strftime/julianday, Spark date_format)."
+    )
 
 
 def _prompt_request(request: dict) -> dict:

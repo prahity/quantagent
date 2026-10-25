@@ -90,6 +90,8 @@ class NemotronModel:
         }
         if response_json:
             body["response_format"] = {"type": "json_object"}
+        if self.config.enable_thinking is not None:
+            body["chat_template_kwargs"] = {"enable_thinking": self.config.enable_thinking}
 
         last_err: str | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -103,10 +105,14 @@ class NemotronModel:
             if resp.status_code == 200:
                 try:
                     data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"]
                 except (ValueError, KeyError, IndexError, TypeError) as exc:
                     raise ModelError(f"unexpected response shape: {type(exc).__name__}") from None
-                return strip_think(content or "")
+                text = strip_think(content or "")
+                if not text and choice.get("finish_reason") == "length":
+                    raise ModelError("response truncated: max_tokens used before any answer (reasoning?)")
+                return text
 
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 last_err = f"HTTP {resp.status_code}"
