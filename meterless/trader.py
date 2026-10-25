@@ -20,7 +20,7 @@ from meterless.query import AnalysisSource, QueryRequest, QueryResult
 _PROMPT = """You are the trading agent in a market simulator. Your goal is to end the window with more cash. Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. If you hold no shares and recent closes are higher than earlier ones, buy.
 Reply with one JSON object and no other text:
 {"orders":[{"symbol":"AAPL","side":"BUY","quantity":10,"order_type":"MARKET"}],"reason":"one or two sentences"}
-orders may be empty, which means hold. side is BUY or SELL. quantity is whole shares sized from the latest close so the position stays within max_position_pct_equity. order_type MARKET needs no limit price. A BUY must fit in cash. You can only SELL shares you hold.
+orders may be empty, which means hold. side is BUY or SELL. quantity is the whole shares you choose, sized from the latest close and the cash you want in that symbol. There is no per-symbol size cap. order_type MARKET needs no limit price. A BUY must fit in cash. You can only SELL shares you hold.
 Use only the symbols, prices, and filings given here. Do not assume anything after as_of.
 
 Request:

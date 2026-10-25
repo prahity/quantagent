@@ -1,0 +1,6 @@
+nomem   2024-01-02+30d  agent  +0.00%  b&h  +0.00%  fills 0
+memory  2024-01-02+30d  notebook update attempt 1 failed: cannot amend unknown rule r1
+memory  2024-01-02+30d  notebook update attempt 2 failed: cannot amend unknown rule r1
+memory  2024-01-02+30d  agent  +0.00%  b&h  +0.00%  fills 0
+memory  months  1  mean +0.00%  mean excess vs b&h +0.00%  first-half excess +nan%  second-half excess +0.00%  compounded +0.00%  beat b&h 0/1
+nomem   months  1  mean +0.00%  mean excess vs b&h +0.00%  first-half excess +nan%  second-half excess +0.00%  compounded +0.00%  beat b&h 0/1

@@ -174,7 +174,8 @@ def main() -> None:
 
     def config(month: str, start: str, end: str, arm: str) -> dict:
         return {"interval": "daily", "mode": "V1", "start": start, "end": end, "initial_cash": args.cash,
-                "symbols": args.symbols.split(","), "label": f"trial-{arm}-{month}"}
+                "symbols": args.symbols.split(","), "label": f"trial-{arm}-{month}",
+                "execution": {"max_position_pct_equity": 0}}
 
     bench_cache: dict[str, dict] = {}
 

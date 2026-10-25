@@ -134,6 +134,18 @@ def test_fit_orders_shrinks_a_buy_to_the_position_cap():
     assert action["orders"][0]["quantity"] == 12
 
 
+def test_fit_orders_uses_cash_when_the_position_cap_is_off():
+    request = {
+        "account": {"cash": 10000, "equity": 10000, "positions": []},
+        "limits": {"max_position_pct_equity": 0, "slippage_bps": 1},
+    }
+    action = fit_orders({
+        "orders": [{"symbol": "AAPL", "side": "BUY", "quantity": 500, "order_type": "MARKET", "limit_price": None}],
+        "reason": "rising",
+    }, request, {"AAPL": 190.0})
+    assert action["orders"][0]["quantity"] == 51
+
+
 def test_open_rejects_an_unknown_backend(tmp_path):
     with pytest.raises(ValueError):
         open_analysis_source("mssql", snapshot_dir=tmp_path)

@@ -15,7 +15,7 @@ _FIELDS = {"add", "amend", "drop"}
 _MAX_ADDS = 2
 _MAX_TEXT = 400
 
-_PROMPT = """You update the strategy notebook for an AI trading agent. Its goal is to end the next window with more cash. Cash and open positions are both counted at the final close. It trades US large-cap stocks and ETFs on daily bars, long only. The simulator allows up to 25% of equity per position, and market orders fill at the next open.
+_PROMPT = """You update the strategy notebook for an AI trading agent. Its goal is to end the next window with more cash. Cash and open positions are both counted at the final close. It trades US large-cap stocks and ETFs on daily bars, long only. A position can use as much of the account as the cash allows, and market orders fill at the next open.
 Below are the current notebook and the record of the period that just finished. The record's numbers were computed by the simulator: returns, profit by symbol, average share of equity invested, days fully in cash, and buy-and-hold of the same symbols.
 
 Return one JSON object and no other text:
@@ -29,7 +29,7 @@ Rules:
 - drop only when this period's numbers contradict that rule. Quote those numbers in because.
 - Quote only numbers that appear in the record or the current notebook. Do not estimate or invent any figure.
 - When buy-and-hold beat the agent while average_invested_pct_of_equity was low, the cause was idle cash. Address it. Do not add caution.
-- Do not lower the 25% per-position limit or cap total investment unless the record shows losses from oversized positions.
+- Do not add a rule that keeps cash idle or limits how much of the account one position may use unless the record shows losses from a large position.
 
 Current notebook:
 {notes}
