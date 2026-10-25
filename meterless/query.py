@@ -1,0 +1,380 @@
+"""Analysis queries. The agent names `bars` and `filings`. The backend binds `as_of`.
+
+`ANALYSIS_BACKEND=sqlite` reads the simulator snapshot. `ANALYSIS_BACKEND=zetaris`
+sends the same request to `ZETARIS_QUERY_URL`. Agent SQL does not change between them.
+Memory is not stored here. H-MEM decides what to remember and what to ask next.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Protocol
+
+import httpx
+
+SCHEMA = """Relations already limited to records available at this decision's as_of. A date filter cannot reveal later rows.
+bars(symbol, interval, ts, open, high, low, close, volume)
+filings(symbol, form, title, published_at, available_at)
+interval is 'daily' or 'hourly'. Times are UTC text, YYYY-MM-DDTHH:MM:SSZ.
+Reply with one SELECT, or WITH ... SELECT, reading only bars and filings.
+"""
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NOMINAL_SECONDS = {"daily": 86400, "hourly": 3600}
+_ROW_LIMIT = 30
+_ALLOWED_READ = {"bars", "filings"}
+_ALLOWED_ACTION = {
+    sqlite3.SQLITE_READ,
+    sqlite3.SQLITE_SELECT,
+    sqlite3.SQLITE_FUNCTION,
+    sqlite3.SQLITE_RECURSIVE,
+    sqlite3.SQLITE_TRANSACTION,
+}
+
+
+@dataclass
+class QueryRequest:
+    """One analysis call. `as_of` is the simulator cutoff. The model does not set it."""
+
+    run_id: str
+    request_id: str
+    query_id: str
+    goal: str
+    sql: str
+    as_of: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class QueryResult:
+    query_id: str
+    goal: str
+    sql: str
+    as_of: str
+    backend: str
+    data_version: str
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    truncated: bool
+    error: str
+    elapsed_ms: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @property
+    def text(self) -> str:
+        if self.error:
+            return f"error: {self.error}"
+        if not self.rows:
+            return "(no rows)"
+        header = "\t".join(self.columns)
+        body = "\n".join("\t".join(_cell(row.get(col)) for col in self.columns) for row in self.rows)
+        note = "\n(truncated)" if self.truncated else ""
+        return f"{header}\n{body}{note}"
+
+
+class AnalysisSource(Protocol):
+    name: str
+    schema_text: str
+    data_version: str
+
+    def execute(self, request: QueryRequest) -> QueryResult: ...
+
+
+def utc_text(value: Any) -> str:
+    """Fixed-width UTC text. String comparison matches time order."""
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _cell(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return "" if value is None else str(value)
+
+
+def one_select(sql: str) -> str:
+    text = sql.strip().rstrip(";").strip()
+    if not text or ";" in text:
+        raise ValueError("send one SELECT")
+    head = text.lstrip("(").lower()
+    if not (head.startswith("select") or head.startswith("with")):
+        raise ValueError("send one SELECT")
+    return text
+
+
+def _authorizer(action: int, arg1: str | None, arg2: str | None, db_name: str | None, source: str | None) -> int:
+    if action not in _ALLOWED_ACTION:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_READ and arg1 not in _ALLOWED_READ and arg1 is not None:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def _with_bar_end(bars: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for row in bars:
+        groups.setdefault((str(row["interval"]), str(row["symbol"])), []).append(row)
+    ready = []
+    for (interval, _symbol), rows in groups.items():
+        nominal = _NOMINAL_SECONDS[interval]
+        ordered = sorted(rows, key=lambda item: utc_text(item["ts"]))
+        for index, row in enumerate(ordered):
+            start = datetime.strptime(utc_text(row["ts"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            end = start + timedelta(seconds=nominal)
+            if index + 1 < len(ordered):
+                nxt = datetime.strptime(utc_text(ordered[index + 1]["ts"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                if nxt < end:
+                    end = nxt
+            ready.append({
+                "symbol": row["symbol"],
+                "interval": interval,
+                "ts": utc_text(start),
+                "bar_end": utc_text(end),
+                "open": round(float(row["open"]), 4),
+                "high": round(float(row["high"]), 4),
+                "low": round(float(row["low"]), 4),
+                "close": round(float(row["close"]), 4),
+                "volume": int(row["volume"]),
+            })
+    return ready
+
+
+def _result(request: QueryRequest, backend: str, data_version: str, started: float, **kwargs: Any) -> QueryResult:
+    return QueryResult(
+        query_id=request.query_id,
+        goal=request.goal,
+        sql=request.sql,
+        as_of=request.as_of,
+        backend=backend,
+        data_version=data_version,
+        columns=kwargs.get("columns", []),
+        rows=kwargs.get("rows", []),
+        truncated=kwargs.get("truncated", False),
+        error=kwargs.get("error", ""),
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
+
+
+class SqliteSource:
+    """Local stand-in for the Zetaris released views. Same relation names, same cutoff rule."""
+
+    name = "sqlite"
+    schema_text = SCHEMA
+
+    def __init__(self, path: Path, data_version: str):
+        self.path = Path(path)
+        self.data_version = data_version
+
+    @classmethod
+    def build(cls, path: Path, bars: list[dict], filings: list[dict], data_version: str = "local") -> "SqliteSource":
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.unlink()
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("""
+                CREATE TABLE price_history (
+                    symbol TEXT, interval TEXT, ts TEXT, bar_end TEXT,
+                    open REAL, high REAL, low REAL, close REAL, volume INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE filing_history (
+                    symbol TEXT, form TEXT, title TEXT, published_at TEXT, available_at TEXT
+                )
+            """)
+            conn.executemany(
+                "INSERT INTO price_history VALUES (?,?,?,?,?,?,?,?,?)",
+                [tuple(row[k] for k in ("symbol", "interval", "ts", "bar_end", "open", "high", "low", "close", "volume")) for row in _with_bar_end(bars)],
+            )
+            conn.executemany(
+                "INSERT INTO filing_history VALUES (?,?,?,?,?)",
+                [(row["symbol"], row.get("form") or "", str(row.get("title") or "")[:200], utc_text(row["published_at"]), utc_text(row["available_at"])) for row in filings],
+            )
+            conn.execute("CREATE INDEX idx_price_end ON price_history(bar_end)")
+            conn.execute("CREATE INDEX idx_filing_avail ON filing_history(available_at)")
+            conn.commit()
+        finally:
+            conn.close()
+        return cls(path, data_version)
+
+    @classmethod
+    def open_snapshot(cls, snapshot_dir: Path, db_path: Path | None = None) -> "SqliteSource":
+        snapshot_dir = Path(snapshot_dir)
+        db_path = Path(db_path) if db_path else snapshot_dir / "analysis.sqlite"
+        import pandas as pd
+
+        files = [snapshot_dir / name for name in ("bars_daily.parquet", "bars_hourly.parquet", "news.parquet")]
+        missing = [path for path in files[:2] if not path.exists()]
+        if missing:
+            raise FileNotFoundError(f"missing {missing[0]}. Run simulator/scripts/fetch_data.py")
+        newest = max(path.stat().st_mtime for path in files if path.exists())
+        manifest_path = snapshot_dir.parent.parent / "config" / "snapshot_manifest.json"
+        data_version = "unpinned"
+        if manifest_path.exists():
+            data_version = json.loads(manifest_path.read_text()).get("data_version", data_version)
+        if not db_path.exists() or db_path.stat().st_mtime < newest:
+            frames = [pd.read_parquet(path) for path in files[:2]]
+            bars = pd.concat(frames, ignore_index=True).to_dict(orient="records")
+            filings = pd.read_parquet(files[2]).to_dict(orient="records") if files[2].exists() else []
+            cls.build(db_path, bars, filings, data_version)
+        return cls(db_path, data_version)
+
+    def execute(self, request: QueryRequest) -> QueryResult:
+        started = time.perf_counter()
+        try:
+            statement = one_select(request.sql)
+            cutoff = utc_text(request.as_of)
+        except (ValueError, TypeError) as exc:
+            return _result(request, self.name, self.data_version, started, error=str(exc))
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("DROP TABLE IF EXISTS temp.bars")
+            conn.execute("DROP TABLE IF EXISTS temp.filings")
+            conn.execute("""
+                CREATE TEMP TABLE bars AS
+                SELECT symbol, interval, ts, open, high, low, close, volume
+                FROM price_history WHERE bar_end <= ?
+            """, (cutoff,))
+            conn.execute("""
+                CREATE TEMP TABLE filings AS
+                SELECT symbol, form, title, published_at, available_at
+                FROM filing_history WHERE published_at <= ? AND available_at <= ?
+            """, (cutoff, cutoff))
+            conn.set_authorizer(_authorizer)
+            try:
+                cursor = conn.execute(f"SELECT * FROM ({statement}) LIMIT ?", (_ROW_LIMIT + 1,))
+                fetched = cursor.fetchall()
+            except sqlite3.Error as exc:
+                return _result(request, self.name, self.data_version, started, error=str(exc))
+            finally:
+                conn.set_authorizer(None)
+            truncated = len(fetched) > _ROW_LIMIT
+            kept = fetched[:_ROW_LIMIT]
+            columns = [item[0] for item in cursor.description or []]
+            rows = [{key: row[key] for key in row.keys()} for row in kept]
+            return _result(request, self.name, self.data_version, started, columns=columns, rows=rows, truncated=truncated)
+        finally:
+            conn.close()
+
+
+class ZetarisSource:
+    """Same `execute` contract against a Zetaris SQL endpoint.
+
+    Register the released objects as `released_bars` and `released_filings`,
+    or set `ZETARIS_BARS_VIEW` and `ZETARIS_FILINGS_VIEW`. Those names must
+    differ from `bars` and `filings`, which are the names the agent uses.
+    This class copies the cutoff into the query it sends. The agent's SQL stays
+    the SQL it would send to the local backend.
+    """
+
+    name = "zetaris"
+    schema_text = SCHEMA
+
+    def __init__(self, query_url: str, token: str = "", bars_view: str = "released_bars", filings_view: str = "released_filings", data_version: str = "zetaris", client: httpx.Client | None = None):
+        for label, name in (("bars view", bars_view), ("filings view", filings_view)):
+            if not _IDENT.match(name) or name in _ALLOWED_READ:
+                raise ValueError(f"{label} must be an identifier other than bars or filings")
+        self.query_url = query_url
+        self.token = token
+        self.bars_view = bars_view
+        self.filings_view = filings_view
+        self.data_version = data_version
+        self._client = client or httpx.Client(timeout=30)
+
+    @classmethod
+    def from_env(cls) -> "ZetarisSource":
+        url = os.environ.get("ZETARIS_QUERY_URL", "").strip()
+        if not url:
+            raise RuntimeError("ANALYSIS_BACKEND=zetaris requires ZETARIS_QUERY_URL")
+        return cls(
+            url,
+            token=os.environ.get("ZETARIS_TOKEN", ""),
+            bars_view=os.environ.get("ZETARIS_BARS_VIEW", "released_bars"),
+            filings_view=os.environ.get("ZETARIS_FILINGS_VIEW", "released_filings"),
+            data_version=os.environ.get("ZETARIS_DATA_VERSION", "zetaris"),
+        )
+
+    def prepare(self, sql: str, as_of: str) -> str:
+        statement = one_select(sql)
+        cutoff = utc_text(as_of)
+        for hidden in (self.bars_view, self.filings_view):
+            if re.search(rf"\b{re.escape(hidden)}\b", statement, re.IGNORECASE):
+                raise ValueError("query the released relations bars and filings")
+        bound = (
+            f"bars AS (SELECT symbol, interval, ts, open, high, low, close, volume FROM {self.bars_view} WHERE bar_end <= '{cutoff}'), "
+            f"filings AS (SELECT symbol, form, title, published_at, available_at FROM {self.filings_view} "
+            f"WHERE published_at <= '{cutoff}' AND available_at <= '{cutoff}')"
+        )
+        if statement.lower().startswith("with"):
+            return f"WITH {bound}, {statement[4:].lstrip()}"
+        return f"WITH {bound} {statement}"
+
+    def execute(self, request: QueryRequest) -> QueryResult:
+        started = time.perf_counter()
+        try:
+            statement = self.prepare(request.sql, request.as_of)
+        except (ValueError, TypeError) as exc:
+            return _result(request, self.name, self.data_version, started, error=str(exc))
+        headers = {"authorization": f"Bearer {self.token}"} if self.token else {}
+        try:
+            response = self._client.post(self.query_url, headers=headers, json={
+                "sql": statement,
+                "as_of": utc_text(request.as_of),
+                "query_id": request.query_id,
+                "goal": request.goal,
+                "run_id": request.run_id,
+                "request_id": request.request_id,
+            })
+        except httpx.HTTPError as exc:
+            return _result(request, self.name, self.data_version, started, error=f"zetaris did not answer: {exc}")
+        if response.status_code != 200:
+            return _result(request, self.name, self.data_version, started, error=f"zetaris returned HTTP {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return _result(request, self.name, self.data_version, started, error="zetaris response was not an object")
+        if payload.get("error"):
+            return _result(request, self.name, self.data_version, started, error=str(payload["error"]))
+        columns = [str(col) for col in payload.get("columns") or []]
+        raw_rows = payload.get("rows") or []
+        rows: list[dict[str, Any]] = []
+        for row in raw_rows[:_ROW_LIMIT]:
+            if isinstance(row, dict):
+                rows.append(row)
+            elif isinstance(row, list):
+                rows.append({columns[i] if i < len(columns) else str(i): value for i, value in enumerate(row)})
+        if not columns and rows:
+            columns = list(rows[0].keys())
+        return _result(
+            request, self.name, self.data_version, started,
+            columns=columns, rows=rows, truncated=bool(payload.get("truncated")) or len(raw_rows) > _ROW_LIMIT,
+        )
+
+
+def open_analysis_source(backend: str | None = None, snapshot_dir: Path | None = None) -> AnalysisSource:
+    """`sqlite` is the local backend. `zetaris` is the same interface on Zetaris."""
+    chosen = (backend if backend is not None else os.environ.get("ANALYSIS_BACKEND", "sqlite")).strip().lower()
+    if chosen == "sqlite":
+        if snapshot_dir is None:
+            raise ValueError("sqlite backend needs the simulator snapshot directory")
+        return SqliteSource.open_snapshot(snapshot_dir)
+    if chosen == "zetaris":
+        return ZetarisSource.from_env()
+    raise ValueError(f"unknown analysis backend {chosen}")

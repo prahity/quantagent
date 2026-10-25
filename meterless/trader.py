@@ -7,9 +7,12 @@ which the simulator records. The model does not choose the fill price.
 from __future__ import annotations
 
 import json
+import re
+import time
 from typing import Any
 
 from meterless.provider import MeterlessRuntime
+from meterless.query import AnalysisSource, QueryRequest, QueryResult
 
 _PROMPT = """You are the trading agent in a market simulator. Your goal is to maximize net profit by the last step of the run. Open positions are marked at the final close. Decide what to do at this step from the account, the recent completed bars, and the released filings below.
 Reply with one JSON object and no other text, in this shape:
@@ -24,6 +27,17 @@ Request:
 """
 
 _BARS = 10
+_QUERY_LIMIT = 1
+_MAX_TOKENS = 700
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+_QUERY_PROMPT = """You are the trading agent. Historical prices and filings are in the SQL relations below, already cut off at this decision's as_of. Use SQL when you need history. Do not estimate a return, a price, or a filing date.
+{schema}
+Return either {{"goal":"<what you need to know>","sql":"<one SELECT>"}} or the action JSON from the trading instructions.
+The simulator's as_of is fixed. Putting a later time in the SQL does not reveal it.
+
+Trading instructions:
+"""
 
 
 def _json_object(text: str) -> dict[str, Any] | None:
@@ -76,23 +90,32 @@ def _market(request: dict, feed: Any) -> dict:
 
 
 _MEMORY_HEADER = """
-Earlier decisions in this run, oldest first, with the simulator's acknowledgement. Use them to stay consistent and to avoid repeating rejected orders:
+Earlier orders in this run, oldest first, with the simulator's acknowledgement. Use them to avoid repeating rejected orders. Decide each step afresh from the current data:
+"""
+
+_NOTES_HEADER = """
+Strategy notebook. You wrote it after reviewing your results in earlier, completed periods. Apply its rules where they fit the current data:
 """
 
 
 class NemotronTrader:
     """Calls Meterless Runtime for each simulator decision request.
 
-    ``memory`` is the number of earlier decisions from this run included in the
-    prompt. Zero sends only the current request.
+    ``memory`` is the number of earlier orders from this run included in the
+    prompt. ``notes`` is a strategy notebook carried in from earlier runs. With
+    both off, each decision sees only the current request and feed.
     """
 
     name = "nemotron"
 
-    def __init__(self, runtime: MeterlessRuntime, memory: int = 0):
+    def __init__(self, runtime: MeterlessRuntime, memory: int = 0, notes: str = "", retries: int = 0, source: AnalysisSource | None = None):
         self.runtime = runtime
         self.memory = memory
+        self.notes = notes
+        self.retries = retries
+        self.source = source
         self.log: list[dict] = []
+        self.queries: list[QueryResult] = []
 
     def observe(self, request: dict, payload: dict, ack: dict) -> None:
         if self.memory <= 0:
@@ -104,7 +127,6 @@ class NemotronTrader:
                 {k: o.get(k) for k in ("symbol", "side", "quantity", "order_type", "limit_price")}
                 for o in payload.get("orders") or [] if isinstance(o, dict)
             ],
-            "reason": str(payload.get("reason") or "")[:300],
             "accepted": ack.get("accepted"),
             "order_status": [{"status": o.get("status"), "reason": o.get("reason")} for o in ack.get("orders", [])],
             "errors": [e.get("message") for e in ack.get("errors", [])],
@@ -113,11 +135,13 @@ class NemotronTrader:
 
     def _prompt(self, visible: dict) -> str:
         prompt = _PROMPT + json.dumps(visible)
+        if self.notes:
+            prompt += "\n" + _NOTES_HEADER + self.notes
         if self.memory > 0 and self.log:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
         return prompt
 
-    def decide(self, request: dict, feed: Any = None) -> dict:
+    def _visible(self, request: dict, feed: Any) -> dict:
         visible = {
             "schema_version": request.get("schema_version"),
             "run_id": request.get("run_id"),
@@ -134,12 +158,76 @@ class NemotronTrader:
         }
         if feed is not None:
             visible.update(_market(request, feed))
-        try:
-            text = self.runtime.complete(self._prompt(visible))
-        except Exception as exc:
-            return _hold(request, f"meterless unavailable: {exc}")
+        return visible
+
+    def _complete(self, prompt: str, request: dict) -> str | dict:
+        for attempt in range(self.retries + 1):
+            try:
+                return self.runtime.complete(prompt, max_tokens=_MAX_TOKENS)
+            except Exception as exc:
+                if attempt == self.retries:
+                    return _hold(request, f"meterless unavailable: {exc}")
+                time.sleep(15 * (attempt + 1))
+        return _hold(request, "meterless unavailable")
+
+    def _query_prompt(self, visible: dict, found: list[QueryResult]) -> str:
+        prompt = _QUERY_PROMPT.format(schema=self.source.schema_text) + _PROMPT + json.dumps(visible)
+        if found:
+            prompt += "\nSQL results for this decision. Cite these figures. Do not replace them:\n"
+            prompt += "\n".join(f"{item.query_id} {item.goal}\n{item.text}" for item in found)
+        if self.notes:
+            prompt += "\n" + _NOTES_HEADER + self.notes
+        if self.memory > 0 and self.log:
+            prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
+        return prompt
+
+    def _ground_reason(self, reason: str, visible: dict, found: list[QueryResult]) -> str:
+        sources = json.dumps(visible) + "\n" + "\n".join(item.text for item in found)
+        if set(_NUMBER.findall(reason)) <= set(_NUMBER.findall(sources)):
+            return reason[:2000]
+        ids = ", ".join(item.query_id for item in found) or "no query"
+        return f"decision follows SQL results ({ids})"[:2000]
+
+    def decide(self, request: dict, feed: Any = None) -> dict:
+        visible = self._visible(request, feed)
+        if self.source is None:
+            text = self._complete(self._prompt(visible), request)
+            if isinstance(text, dict):
+                return text
+            parsed = _json_object(text)
+            if parsed is None:
+                return _hold(request, "model reply was not the action JSON")
+            parsed["reason"] = str(parsed.get("reason") or "nemotron")[:2000]
+            return parsed
+
+        found: list[QueryResult] = []
+        for _ in range(_QUERY_LIMIT):
+            text = self._complete(self._query_prompt(visible, found), request)
+            if isinstance(text, dict):
+                return text
+            parsed = _json_object(text) or {}
+            sql = parsed.get("sql")
+            if isinstance(sql, str) and sql.strip():
+                result = self.source.execute(QueryRequest(
+                    run_id=str(request.get("run_id") or ""),
+                    request_id=str(request.get("request_id") or ""),
+                    query_id=f"{request.get('request_id')}-q{len(self.queries) + 1}",
+                    goal=str(parsed.get("goal") or "")[:300],
+                    sql=sql,
+                    as_of=str(request.get("as_of") or ""),
+                ))
+                self.queries.append(result)
+                found.append(result)
+                continue
+            if "orders" in parsed:
+                parsed["reason"] = self._ground_reason(str(parsed.get("reason") or "nemotron"), visible, found)
+                return parsed
+            break
+        text = self._complete(self._query_prompt(visible, found) + "\nReply with the action JSON only.", request)
+        if isinstance(text, dict):
+            return text
         parsed = _json_object(text)
-        if parsed is None:
+        if parsed is None or "orders" not in parsed:
             return _hold(request, "model reply was not the action JSON")
-        parsed["reason"] = str(parsed.get("reason") or "nemotron")[:2000]
+        parsed["reason"] = self._ground_reason(str(parsed.get("reason") or "nemotron"), visible, found)
         return parsed

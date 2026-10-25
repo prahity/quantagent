@@ -1,60 +1,86 @@
-# Session handoff
+# Resume here
 
-This file is the context from the cloud Cursor chat. A new agent on the Mac does not see that chat. Read this file, then `simulator/context/work.md`, `meterless/README.md`, and `README.md`.
-
-## Where things run
-
-Nightshift is installed on the Mac and is already listening:
-
-- `127.0.0.1:8088` and `[::1]:8088`
-- LAN `10.2.120.26:8088`
-- Process name `nightshif`
-
-`GET http://127.0.0.1:8088/v1/models` with the Console API key and header `meterless-app: ai-trader` returned `meterless/auto`, `meterless/fast`, `meterless/deep`, `meterless/cheap`, `meterless/local`, `meterless/fusion`, plus NVIDIA Nemotron cloud lanes (`nvidia/nemotron-3-super-120b-a12b`, `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3.5-lightning-30b-a3b`, and the Llama Nemotron lanes) and small on-device `webllm/*` models.
-
-The cloud Cursor machine cannot open that port. `curl` to `127.0.0.1:8088` from the cloud workspace fails. Every Meterless call has to run in a terminal on this Mac, with Nightshift open.
-
-The NVIDIA API key belongs only in Nightshift, Setup, Providers, NVIDIA. It must not be written into `.env`, code, or git. The app's secret is the Nightshift Console runtime token, stored only in the gitignored `.env`:
-
-```bash
-METERLESS_BASE_URL=http://127.0.0.1:8088/v1
-METERLESS_RUNTIME_TOKEN=<Nightshift Console API key>
-METERLESS_MODEL=meterless/auto
-```
-
-Do not print the token. `python -m meterless` reports online, unauthorized, or offline and never echoes it.
-
-Local checkout used for this work:
-
-`/Users/prahityaugand/Desktop/nonScreenShots/code/current/quantagent`
+Read this file, then `meterless/README.md`. The market environment is `simulator/README.md`. The long design is `README.md` at the repo root.
 
 Git remote: `https://github.com/prahity/quantagent.git` on `main`.
 
-## What is already built
+## Where the work stopped
 
-`simulator/` is the market environment. It replays real Yahoo hourly and daily bars and SEC EDGAR filings from 2024-01-02 through 2026-07-21 for AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, and SPY. No synthetic prices. `sim/` never imports `agent/` or `meterless/`. The scripted agents under `simulator/agent/` are deterministic test harnesses, not the trading model.
+The simulator replays real Yahoo bars and SEC filings from 2024-01-02 through 2026-07-21. The trading model is `NemotronTrader` in `meterless/trader.py`. It calls Nightshift and must answer with `schema_version` `1.0` action JSON. Anything else is a hold. The model does not set the fill price.
 
-`meterless/` is the OpenAI-compatible client for Nightshift (provider contract v4, Runtime 1.4). `python -m meterless` probes `GET /v1/models`. `NemotronTrader` in `meterless/trader.py` sends one simulator decision request and expects `schema_version` `1.0` action JSON. A reply that is not that JSON becomes a hold. The model does not set the fill price.
+`simulator/trial.py` compares two arms on daily bars for AAPL, MSFT, and SPY, one decision per completed day, $10,000 at the start of each month:
 
-Chat completions are not confirmed yet. The model list succeeded. The next check, from this Mac checkout, is:
+- `nomem` sees only that day's request. All 31 months from 2024-01 through 2026-07 are in `context/trials/monthly-2024-2026/results.jsonl`. A month takes about 20–36 minutes. Six months run at once, so twelve months of wall clock is about an hour.
+- `memory` keeps a short order log and a strategy notebook rewritten after each month. January–July 2024 finished under `context/trials/monthly-2024-2026/memory-attempt-1/`. Those notes invent figures the simulator did not report. Do not treat them as evidence. The run is stopped.
+
+Analysis SQL is `meterless/query.py`. The agent names `bars` and `filings`. The adapter binds the simulator's `as_of`, so a date in the SQL cannot see a later row. `ANALYSIS_BACKEND=sqlite` is the local snapshot. `ANALYSIS_BACKEND=zetaris` is the same call against `ZETARIS_QUERY_URL`. The swap steps are in `meterless/README.md`. Only the memory arm queries SQL. Each day gets at most one SQL call, then the order. Full query rows append to `queries.jsonl` in the trial output.
+
+H-MEM is the memory layer and is not wired in. `meterless/notebook.py` is the temporary notebook until that integration replaces it. A figure in an order reason is kept only when it appears in the SQL rows or the bars the simulator already released.
+
+Pinned model for both arms: `nvidia/nemotron-3.5-lightning-30b-a3b`, with reasoning off (`--thinking off`). That is the small Nemotron lane. `meterless/cheap`, `meterless/local`, and `webllm` are faster and miss the action JSON more often. `meterless/auto` can change lanes between calls, so the trial passes the pinned id.
+
+## Set up Meterless
+
+Nightshift has to be running on this machine. The app calls `http://127.0.0.1:8088/v1`. A cloud workspace cannot open that port. The process name is `nightshif`.
+
+The NVIDIA API key goes in Nightshift, Setup, Providers, NVIDIA. It does not go in `.env`, code, or git. The app's secret is the Nightshift Console runtime token.
 
 ```bash
+cd <this repo>
+python3.12 -m venv .venv
 source .venv/bin/activate
+pip install -e "./simulator[dev]"
+cp .env.example .env
+```
+
+Fill `.env` from the Nightshift Console. Do not print the token.
+
+```bash
+METERLESS_BASE_URL=http://127.0.0.1:8088/v1
+METERLESS_RUNTIME_TOKEN=<Console API key>
+METERLESS_MODEL=meterless/auto
+ANALYSIS_BACKEND=sqlite
+```
+
+`unauthorized` means Nightshift answered and rejected the token. `offline` means it did not answer with Meterless model ids. The probe never echoes the token.
+
+```bash
 set -a && source .env && set +a
+python -m meterless
 python -m meterless --say "Reply with one sentence confirming this connection works."
 ```
 
-Run that from the repository root so `meterless` imports. `httpx` has to be installed in that venv. After a fresh clone, the price snapshot is absent because `simulator/sim/snapshot/` is gitignored. Rebuild it with `python scripts/fetch_data.py` from `simulator/` before a real run. Expected manifest id: `snap-17f602c41277a742`.
+The model list should include `meterless/auto` and `nvidia/nemotron-3.5-lightning-30b-a3b`. Header on every call is `meterless-app: ai-trader`, set in `meterless/provider.py`.
 
-## Next task
+The price snapshot is gitignored. After a fresh clone, rebuild it before a trial. Expected manifest id: `snap-17f602c41277a742`.
 
-Ignore Zetaris for now. Compare Nemotron with Meterless memory against Nemotron without it.
+```bash
+export SEC_USER_AGENT="Your Name you@example.com"
+cd simulator
+python scripts/fetch_data.py
+```
 
-Both arms use the same Nightshift route, the same model lane, the same window, the same symbols, and the same starting capital. Suggested first window: daily bars, January 2025, symbols AAPL, MSFT, SPY, cash 10000, mode V1. Pin one Nemotron id for both arms rather than leaving routing to chance. `meterless/auto` may pick a different lane per call. A pinned id such as `nvidia/nemotron-3-super-120b-a12b` keeps the model fixed. Nightshift still has to be the endpoint, so the Power rule (Meterless runtime in front of Nemotron) stays intact.
+The first memory-arm run builds `simulator/sim/snapshot/analysis.sqlite` from that snapshot. It is gitignored.
 
-- Without memory: each decision is a fresh prompt. Send only the current simulator decision request. No prior orders, fills, or lessons.
-- With memory: keep a bounded log of this run's earlier decisions and the simulator's acknowledgements, and include that log in the prompt. This is in-run memory, not a claim that Nightshift's own memory product was evaluated.
+## Continue the trial
 
-`simulator/runner.py` only loads `hold`, `buy_and_hold`, and `script`. Wiring `NemotronTrader` through `run_agent` is still to do. Record both reports (`net_profit`, `return_pct`, `max_drawdown_pct`, `fills`, `rejections`, `invalid_responses`) and the model id. A hold-only run means the model missed the JSON contract. Fix the parse or the prompt before treating the score as a trading result.
+From the repo root, with the venv and `.env` loaded:
 
-One decision per completed bar. January 2025 daily on three symbols is on the order of twenty model calls per arm. Do not start with the full 2024–2026 hourly history.
+```bash
+cd simulator
+PYTHONUNBUFFERED=1 PYTHONPATH=.. python -u trial.py \
+  --out ../context/trials/monthly-2024-2026 \
+  --thinking off \
+  --model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+Months already listed in `results.jsonl` are skipped. The no-memory arm will skip all 31 months. The memory arm starts at 2024-01 in this output directory, because the earlier memory rows live under `memory-attempt-1/` and used the old notebook. To rerun one arm only, pass `--arms nomem` or `--arms memory`. To cover one year, pass `--first 2024-01 --last 2024-12`.
+
+A hold-only month with `invalid_responses` near the number of trading days means the model missed the JSON contract. Fix the parse or the prompt before treating that score as a trading result. The reasoning-off file `context/trials/monthly-2024-2026-nothink/results.jsonl` is that kind of run: March–December 2024, no fills.
+
+Checks that do not call the model:
+
+```bash
+python -m pytest -q meterless/tests
+cd simulator && python -m pytest -q
+```

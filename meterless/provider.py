@@ -112,11 +112,13 @@ def _meterless_ids(payload: Any) -> list[str]:
 class MeterlessRuntime:
     """OpenAI-compatible client for one Nightshift runtime."""
 
-    def __init__(self, base_url: str, token: str, model: str = DEFAULT_MODEL, app_id: str = APP_ID, client: httpx.Client | None = None):
+    def __init__(self, base_url: str, token: str, model: str = DEFAULT_MODEL, app_id: str = APP_ID, client: httpx.Client | None = None,
+                 extra_body: dict[str, Any] | None = None):
         self.base_url = normalize_base_url(base_url)
         self.token = token.strip()
         self.model = model or DEFAULT_MODEL
         self.app_id = app_id
+        self.extra_body = extra_body or {}
         self._client = client or httpx.Client(timeout=CHAT_TIMEOUT)
         self._owns_client = client is None
 
@@ -158,17 +160,20 @@ class MeterlessRuntime:
             return Probe("offline", self.base_url, [], f"HTTP 200 had no meterless ids: {snippet}")
         return Probe("online", self.base_url, ids, "")
 
-    def complete(self, content: str, model: str | None = None) -> str:
+    def complete(self, content: str, model: str | None = None, max_tokens: int | None = None) -> str:
         if not isinstance(content, str):
             raise TypeError("chat content must be a plain string")
         if not self.token or self.token == PLACEHOLDER_TOKEN:
             raise ProviderError("unauthorized", "runtime token is missing or the placeholder rt-local")
         chosen = model or self.model
         try:
+            body = {**self.extra_body, "model": chosen, "messages": [{"role": "user", "content": content}]}
+            if max_tokens is not None:
+                body["max_tokens"] = max_tokens
             response = self._client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(chat=True),
-                json={"model": chosen, "messages": [{"role": "user", "content": content}]},
+                json=body,
                 timeout=CHAT_TIMEOUT,
             )
         except httpx.HTTPError as exc:

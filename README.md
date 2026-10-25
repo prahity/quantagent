@@ -67,7 +67,7 @@ Meterless coordinates a complete strategy-improvement round:
 
 Maintain a directed acyclic history linking prior rules, analysis questions, query attempts/results, decisions, predictions, actions, measured outcomes and revised rules, alongside strategy-version lineage. Preserve successful and failed attempts. Each rule records its scope, supporting cases, counterexamples, confidence and version; one profitable trade does not establish a rule. Keep complete records durable and retrieve a bounded relevant context for each prompt.
 
-The [Swarms README](https://github.com/Meterless/Swarms) describes orchestration and memory/context features. The trading-history schema, feedback capture, automated controller and Zetaris synchronization are project integrations to verify. Its task-execution DAG and our persistent strategy/decision history serve different purposes.
+Planning reads Zetaris. A joined result over released prices, filings, and completed trials is what selects the next hypothesis. Meterless retrieves the prior decision, outcome, and analytical rule that say which join to run. Nemotron writes that SQL and the candidate policy. The simulator scores the candidate. A parallel writing swarm does not see the cutoff or the ledger, so it is not part of this loop. The trading-history schema, feedback capture, and Zetaris synchronization are project integrations to verify.
 
 ## Nemotron
 
@@ -154,7 +154,6 @@ The [linked Google rules document and selected tab](https://docs.google.com/docu
 
 - [Zetaris Cloud](https://www.zetaris.com/cloud) and [AgentFlow](https://www.zetaris.com/agentflow)
 - [Zetaris SQL Guide](https://kbase.zetaris.com/knowledge/sql-guide) and [row/column access controls](https://kbase.zetaris.com/knowledge/controlling-row-level-access)
-- [Meterless Swarms](https://github.com/Meterless/Swarms)
 - [NVIDIA Nemotron usage example](https://docs.nvidia.com/nemotron/0.1.0/use-case-examples/Simple%20Nemotron-3-Nano%20Usage%20Example/README.html)
 - [HKUDS AI-Trader](https://github.com/HKUDS/AI-Trader)
 - [Co-LMLM: Continuous-Query Limited Memory Language Models](https://arxiv.org/abs/2607.07707)
