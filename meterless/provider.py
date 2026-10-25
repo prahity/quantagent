@@ -95,6 +95,7 @@ class Probe:
     status: str  # online | unauthorized | offline
     base_url: str
     models: list[str]
+    detail: str = ""
 
 
 def _meterless_ids(payload: Any) -> list[str]:
@@ -139,22 +140,23 @@ class MeterlessRuntime:
         passes ``local_placeholder=False`` so a guess is not treated as a running runtime.
         """
         if local_placeholder and self.token == PLACEHOLDER_TOKEN:
-            return Probe("unauthorized", self.base_url, [])
+            return Probe("unauthorized", self.base_url, [], "placeholder token rt-local is rejected")
         try:
             response = self._client.get(f"{self.base_url}/models", headers=self._headers(chat=False), timeout=10.0)
-        except httpx.HTTPError:
-            return Probe("offline", self.base_url, [])
+        except httpx.HTTPError as exc:
+            return Probe("offline", self.base_url, [], f"{type(exc).__name__}: {exc}")
+        snippet = response.text[:180].replace("\n", " ")
         if response.status_code in (401, 403):
-            return Probe("unauthorized", self.base_url, [])
+            return Probe("unauthorized", self.base_url, [], f"HTTP {response.status_code}")
         if response.status_code != 200:
-            return Probe("offline", self.base_url, [])
+            return Probe("offline", self.base_url, [], f"HTTP {response.status_code} {snippet}")
         try:
             ids = _meterless_ids(response.json())
         except ValueError:
-            return Probe("offline", self.base_url, [])
+            return Probe("offline", self.base_url, [], f"HTTP 200 was not JSON: {snippet}")
         if not ids:
-            return Probe("offline", self.base_url, [])
-        return Probe("online", self.base_url, ids)
+            return Probe("offline", self.base_url, [], f"HTTP 200 had no meterless ids: {snippet}")
+        return Probe("online", self.base_url, ids, "")
 
     def complete(self, content: str, model: str | None = None) -> str:
         if not isinstance(content, str):

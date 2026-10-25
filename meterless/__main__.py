@@ -15,7 +15,10 @@ from meterless.provider import MeterlessRuntime, Probe, auto_detect, load_settin
 
 def _line(probe: Probe) -> str:
     models = ", ".join(probe.models) if probe.models else "none discovered"
-    return f"{probe.status}  {probe.base_url}  models: {models}"
+    line = f"{probe.status}  {probe.base_url}  models: {models}"
+    if probe.detail:
+        line += f"\n{probe.detail}"
+    return line
 
 
 def main() -> int:
