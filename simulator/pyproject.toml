@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+zetaris = ["jaydebeapi>=1.2", "jpype1>=1.5", "python-dotenv>=1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

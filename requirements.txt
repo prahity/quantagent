@@ -12,12 +12,12 @@ pyyaml>=6
 # --- agent side ---
 python-dotenv>=1.0     # load NEMOTRON_* / ZETARIS_* from .env
 requests>=2.31         # ONLY used to reach the pinned Nemotron model endpoint
+sqlglot>=30.0          # parses agent SQL for the query tool's table allowlist (no network)
 
-# --- optional: Zetaris JDBC backend for the query tool ---
-# Install these only if you point the query tool at a Zetaris instance instead of
-# the local SQLite backend. jpype1 needs a Java runtime on PATH.
-# jaydebeapi>=1.2
-# jpype1>=1.5
+# --- Zetaris JDBC backend (QUERY_BACKEND=zetaris) and simulator/scripts/*zetaris* ---
+# jpype1 needs a Java runtime (JDK 17+) on PATH; the SQLite backend works without one.
+jaydebeapi>=1.2
+jpype1>=1.5
 
 # --- tests ---
 # Tests use the stdlib `unittest` runner; no extra dependency required.

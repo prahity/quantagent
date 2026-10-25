@@ -60,6 +60,19 @@ Each run writes `runs/<run_id>/` with `config.json`, `requests.jsonl`, `actions.
 - Fills use the next bar open, plus `slippage_bps`, `commission_per_share` / `commission_min`, no shorting by default, `max_position_pct_equity`, and `order_validity_bars`. `LIMIT` orders wait until marketable. Defaults are in `config/environment.yaml` and can be overridden per run.
 - The report is `net_profit = final_equity - K` after costs, with max drawdown, Sharpe (sampling interval stated), turnover, fills, rejections, `environment_version`, and `data_version`.
 
+## Publishing the released feed to Zetaris
+
+The simulator owns released-feed writes. `scripts/publish_zetaris.py` loads the whole frozen snapshot into Zetaris once, under the simulator login. Each row carries a hidden `_released_epoch`: bars are released at `bar_end`, and news at `max(published_at, available_at)`. The agent's query tool shows a row only once that time is at or before the decision's `as_of`, which gives the same visibility as the run's own feed at every decision boundary (`tests/test_publish.py`). The one cosmetic difference is the news `released_at` value: Zetaris shows when the record became eligible, not the boundary at which a particular run released it.
+
+1. Sign in to the web UI as an admin and run `config/zetaris_setup.sql` in its SQL editor. It creates a lakehouse, the feed tables, and a read-only `aitrader_agent` login (SELECT only). The simulator publishes as the admin.
+   - **Local Docker install (`zetaris-platform`):** the UI is at `localhost:3000`, but JDBC goes to the query engine at `jdbc:zetaris:lightning@localhost:10000`.
+   - The driver jar is `zetaris-platform/jdbc/ndp-jdbc-driver-*.jar`, and logins are sign-in emails (for example `admin@zetaris.com`).
+2. Fill in the `ZETARIS_*` settings in the repository-root `.env`, from `.env.example`. A JDK must be on PATH.
+3. `python scripts/zetaris_probe.py` checks connectivity, parameter binding, the SQL dialect, and that the agent login cannot write.
+4. `python scripts/publish_zetaris.py --create`. Add `--fixtures` for the small slice. `--replace` is required to switch `data_version`. If the driver rejects `?` parameters, use `--inline`.
+
+The tables hold one `data_version` at a time, and the root runner refuses `--backend zetaris` unless it matches the snapshot being replayed.
+
 ## Expanding the universe to 20–30 symbols
 
 Follow the steps at the top of `config/universe.yaml`: add the ticker, SEC CIK, and sector; re-run `scripts/fetch_data.py`; re-run `pytest`. Add symbols before early-2024 hourly bars leave Yahoo's 730-day window, and only use a symbol in run windows where it was actually listed under that ticker.

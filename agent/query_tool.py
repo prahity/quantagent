@@ -7,8 +7,13 @@ through a CTE already filtered by `released_at <= as_of`.
 
 Enforcement (defence in depth):
   * SELECT / WITH only, single statement.
-  * Only the released feed tables (`prices`, `news`) are reachable; raw/underscore tables,
-    schema-qualified names (`main.`, `temp.`), and `sqlite_*` are rejected.
+  * Table allowlist (parsed with sqlglot): every table reference must be an unqualified
+    `prices`, `news` or a CTE the query defines. This is what keeps the agent off the raw
+    Zetaris tables (`<datasource>.feed_*`), which hold the whole snapshot.
+  * Raw/underscore tables, schema-qualified names (`main.`, `temp.`), and `sqlite_*` are
+    also rejected by regex.
+  * Each feed CTE is further scoped to the run's symbols and lookback window, so both
+    backends expose exactly the rows the simulator released to this run.
   * Write / DDL / ATTACH / PRAGMA keywords rejected.
   * Row limit, per-query timeout, and a per-decision call budget.
   * SQLite backend uses a read-only connection plus an authorizer; the Zetaris backend
@@ -25,13 +30,21 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
+import sqlglot
+from dotenv import load_dotenv
+from sqlglot import exp
+
 from agent.config import FEED_TABLES, QueryConfig
+
+load_dotenv()  # QUERY_BACKEND / ZETARIS_* may come from .env; never prints anything
 
 # ------------------------------------------------------------------ SQL guard rails
 _FORBIDDEN_KEYWORDS = re.compile(
@@ -83,7 +96,49 @@ def validate_sql(sql: str) -> list[str]:
         errors.append("schema-qualified names (main./temp.) are not allowed")
     if _UNDERSCORE_IDENT.search(body):
         errors.append("only the released feed tables may be read")
+    if not errors:
+        errors.extend(_table_errors(body))
     return errors
+
+
+def _table_errors(sql: str) -> list[str]:
+    """Allowlist every table reference: unqualified `prices`, `news` or the query's own CTEs."""
+    trees, parse_error = None, None
+    for dialect in ("spark", "sqlite"):  # Zetaris is Spark SQL; the local backend is SQLite
+        try:
+            trees = sqlglot.parse(sql, read=dialect)
+            break
+        except sqlglot.errors.ParseError as exc:
+            parse_error = parse_error or exc
+    if trees is None:
+        return [f"could not parse query: {str(parse_error).splitlines()[0]}"]
+    if len(trees) != 1 or trees[0] is None:
+        return ["only a single statement is allowed"]
+    tree = trees[0]
+    ctes = {cte.alias.lower() for cte in tree.find_all(exp.CTE)}
+    if ctes & set(FEED_TABLES):
+        return [f"CTE names may not shadow the feed tables {sorted(FEED_TABLES)}"]
+    allowed = set(FEED_TABLES) | ctes
+    errors = []
+    for table in tree.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            errors.append("table functions are not allowed")
+        elif table.db or table.catalog:
+            errors.append(f"qualified table names are not allowed: {table.sql(dialect='spark')}")
+        elif table.name.lower() not in allowed:
+            errors.append(f"unknown table {table.name!r}; readable tables are {sorted(FEED_TABLES)}")
+    return errors
+
+
+@dataclass(frozen=True)
+class FeedScope:
+    """The rows the simulator released to one run: its symbols and lookback starts.
+
+    `from_epoch` maps each feed table to the earliest value (epoch s) of that table's
+    `scope_col` the run may see. The runner builds this from the run config."""
+
+    symbols: tuple[str, ...]
+    from_epoch: dict[str, int]
 
 
 @dataclass
@@ -118,6 +173,13 @@ class QueryResult:
 # ------------------------------------------------------------------ backends
 class QueryBackend(ABC):
     """Executes already-validated, CTE-wrapped SQL. Two implementations share this API."""
+
+    remote = False          # remote engines use QueryConfig.zetaris_timeout_s
+    published_feed = False  # True: tables hold the whole published snapshot, not a per-run copy
+
+    def loaded_data_versions(self) -> set[str]:
+        """Snapshot versions in a published feed (only meaningful when published_feed)."""
+        return set()
 
     @abstractmethod
     def raw_source(self, table: str) -> str:
@@ -178,30 +240,58 @@ class SQLiteBackend(QueryBackend):
             conn.close()
 
 
+def _plain(value):
+    """JDBC values to JSON-friendly Python. JPype boxes (java.lang.Long, JDouble, ...) subclass
+    int/float and are unboxed; decimals become floats; anything else Java-typed is stringified."""
+    if value is None or type(value) in (str, int, float, bool):
+        return value
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    return str(value)
+
+
 class ZetarisJDBCBackend(QueryBackend):
     """Zetaris over JDBC using the separate ZETARIS_AGENT_USER identity.
 
-    Requires `jaydebeapi` (and a Java runtime). Enforcement relies on this read-only
-    agent identity and the database's own row/column permissions in addition to the
-    shared SQL guards and CTE cutoff. Only used when QUERY_BACKEND=zetaris.
+    Requires `jaydebeapi` (and a Java runtime). The feed tables hold the whole frozen
+    snapshot (simulator/scripts/publish_zetaris.py loads it once); the CTE cutoff and the
+    table allowlist are what hide unreleased rows. The agent identity's own grants (SELECT
+    on the feed tables only) stop writes and reads of anything else. Only used when
+    QUERY_BACKEND=zetaris.
     """
 
-    def __init__(self) -> None:
+    remote = True
+    published_feed = True
+
+    def __init__(self, interval: str = "hourly") -> None:
+        if interval not in ("hourly", "daily"):
+            raise ValueError(f"unknown interval {interval!r}")
         self._url = os.environ.get("ZETARIS_JDBC_URL") or ""
         self._driver = os.environ.get("ZETARIS_JDBC_DRIVER") or ""
         self._jar = os.environ.get("ZETARIS_JDBC_JAR") or ""
         self._user = os.environ.get("ZETARIS_AGENT_USER") or ""
         self._password = os.environ.get("ZETARIS_AGENT_PASSWORD") or ""
+        prices_env = f"ZETARIS_FEED_PRICES_{interval.upper()}"
         self._sources = {
-            "prices": os.environ.get("ZETARIS_FEED_PRICES") or "",
+            "prices": os.environ.get(prices_env) or "",
             "news": os.environ.get("ZETARIS_FEED_NEWS") or "",
         }
+        self.manifest_table = os.environ.get("ZETARIS_FEED_MANIFEST") or ""
         missing = [k for k, v in {
             "ZETARIS_JDBC_URL": self._url,
             "ZETARIS_JDBC_DRIVER": self._driver,
             "ZETARIS_AGENT_USER": self._user,
-            "ZETARIS_FEED_PRICES": self._sources["prices"],
+            prices_env: self._sources["prices"],
             "ZETARIS_FEED_NEWS": self._sources["news"],
+            "ZETARIS_FEED_MANIFEST": self.manifest_table,
         }.items() if not v]
         if missing:
             raise RuntimeError(f"Zetaris backend missing config: {', '.join(missing)}")
@@ -209,6 +299,15 @@ class ZetarisJDBCBackend(QueryBackend):
 
     def raw_source(self, table: str) -> str:
         return self._sources[table]
+
+    def loaded_data_versions(self) -> set[str]:
+        """data_version values recorded in the feed manifest table."""
+        cur = self._connect().cursor()
+        try:
+            cur.execute(f"SELECT data_version FROM {self.manifest_table}")
+            return {str(r[0]) for r in cur.fetchall()}
+        finally:
+            cur.close()
 
     def _connect(self):
         if self._conn is None:
@@ -231,15 +330,40 @@ class ZetarisJDBCBackend(QueryBackend):
         qmark_sql = re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", _sub, sql)
         conn = self._connect()
         cur = conn.cursor()
+        outcome: dict = {}
+
+        def _work():
+            try:
+                cur.execute(qmark_sql, ordered)
+                outcome["fetched"] = cur.fetchmany(row_limit + 1)
+                outcome["columns"] = [d[0] for d in cur.description] if cur.description else []
+            except Exception as exc:  # re-raised on the calling thread
+                outcome["error"] = exc
+
+        # jaydebeapi has no query timeout; run on a worker and cancel the JDBC statement
+        # at the deadline (cursor._prep is jaydebeapi's java.sql.PreparedStatement).
+        worker = threading.Thread(target=_work, daemon=True)
         try:
-            cur.execute(qmark_sql, ordered)
-            fetched = cur.fetchmany(row_limit + 1)
+            worker.start()
+            worker.join(timeout_s)
+            if worker.is_alive():
+                stmt = getattr(cur, "_prep", None)
+                if stmt is not None:
+                    try:
+                        stmt.cancel()
+                    except Exception:
+                        pass
+                worker.join(1.0)
+                raise TimeoutError(f"query exceeded {timeout_s}s")
+            if "error" in outcome:
+                raise outcome["error"]
+            fetched = outcome["fetched"]
             truncated = len(fetched) > row_limit
-            rows = fetched[:row_limit]
-            columns = [d[0] for d in cur.description] if cur.description else []
-            return columns, [tuple(r) for r in rows], truncated
+            rows = [tuple(_plain(v) for v in r) for r in fetched[:row_limit]]
+            return outcome["columns"], rows, truncated
         finally:
-            cur.close()
+            if not worker.is_alive():
+                cur.close()
 
     def close(self) -> None:  # pragma: no cover - needs a live instance
         if self._conn is not None:
@@ -259,6 +383,7 @@ class QueryTool:
         as_of: str,
         log_path: str | Path,
         config: QueryConfig | None = None,
+        scope: FeedScope | None = None,
     ):
         self.backend = backend
         self.run_id = run_id
@@ -267,6 +392,7 @@ class QueryTool:
         self._as_of_epoch = _iso_to_epoch(as_of)
         self.log_path = Path(log_path)
         self.config = config or QueryConfig()
+        self.scope = scope
         self._calls = 0
 
     @property
@@ -278,8 +404,20 @@ class QueryTool:
         for name, spec in FEED_TABLES.items():
             cols = ", ".join(spec["columns"])
             src = self.backend.raw_source(name)
-            parts.append(f"{name} AS (SELECT {cols} FROM {src} WHERE _released_epoch <= :{_AS_OF_PARAM})")
+            where = f"_released_epoch <= :{_AS_OF_PARAM}"
+            if self.scope is not None:
+                where += f" AND _scope_epoch >= :_from_{name}"
+                syms = ", ".join(f":_sym_{i}" for i in range(len(self.scope.symbols))) or "NULL"
+                where += f" AND symbol IN ({syms})"
+            parts.append(f"{name} AS (SELECT {cols} FROM {src} WHERE {where})")
         return "WITH " + ",\n     ".join(parts)
+
+    def _bind(self, params: dict) -> dict:
+        bind = {**params, _AS_OF_PARAM: self._as_of_epoch}
+        if self.scope is not None:
+            bind.update({f"_from_{name}": self.scope.from_epoch[name] for name in FEED_TABLES})
+            bind.update({f"_sym_{i}": s for i, s in enumerate(self.scope.symbols)})
+        return bind
 
     def _wrap(self, sql: str) -> str:
         cleaned = _strip_comments(sql).strip().rstrip(";").strip()
@@ -314,11 +452,10 @@ class QueryTool:
             return QueryResult(qid, goal, ok=False, error="; ".join(sql_errors))
 
         wrapped = self._wrap(sql)
-        bind = {**params, _AS_OF_PARAM: self._as_of_epoch}
+        bind = self._bind(params)
+        timeout_s = self.config.zetaris_timeout_s if self.backend.remote else self.config.timeout_s
         try:
-            columns, raw_rows, truncated = self.backend.run(
-                wrapped, bind, self.config.row_limit, self.config.timeout_s
-            )
+            columns, raw_rows, truncated = self.backend.run(wrapped, bind, self.config.row_limit, timeout_s)
         except Exception as exc:  # surfaced as a structured error, never raised at the agent
             return QueryResult(qid, goal, ok=False, error=f"{type(exc).__name__}: {exc}")
 
@@ -343,8 +480,9 @@ def build_feed_db(db_path: str | Path, prices: list[dict], news: list[dict]) -> 
     """(Re)build the per-run released-feed SQLite database from plain row dicts.
 
     Called by the runner, which collects released rows from the simulator feed. Each raw
-    table carries a hidden `_released_epoch` used by the CTE cutoff; the agent-facing
-    columns are exactly those in FEED_TABLES. This function imports no simulator code.
+    table carries the hidden `_released_epoch` (CTE cutoff) and `_scope_epoch` (run
+    lookback filter); the agent-facing columns are exactly those in FEED_TABLES. This
+    function imports no simulator code.
     """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,27 +493,29 @@ def build_feed_db(db_path: str | Path, prices: list[dict], news: list[dict]) -> 
             raw = f"_{name}"
             coldefs = ", ".join(f'"{c}"' for c in cols)
             conn.execute(f"DROP TABLE IF EXISTS {raw}")
-            conn.execute(f"CREATE TABLE {raw} ({coldefs}, _released_epoch INTEGER)")
+            conn.execute(f"CREATE TABLE {raw} ({coldefs}, _released_epoch INTEGER, _scope_epoch INTEGER)")
             source = prices if name == "prices" else news
             if source:
-                placeholders = ", ".join(["?"] * (len(cols) + 1))
-                insert = f"INSERT INTO {raw} ({coldefs}, _released_epoch) VALUES ({placeholders})"
+                placeholders = ", ".join(["?"] * (len(cols) + 2))
+                insert = f"INSERT INTO {raw} ({coldefs}, _released_epoch, _scope_epoch) VALUES ({placeholders})"
                 rows = []
                 for row in source:
                     released = row.get(spec["released_col"])
                     epoch = _iso_to_epoch(released) if released is not None else 0
-                    rows.append([row.get(c) for c in cols] + [epoch])
+                    scoped = row.get(spec["scope_col"])
+                    scope_epoch = _iso_to_epoch(scoped) if scoped is not None else 0
+                    rows.append([row.get(c) for c in cols] + [epoch, scope_epoch])
                 conn.executemany(insert, rows)
         conn.commit()
     finally:
         conn.close()
 
 
-def make_backend(db_path: str | Path | None = None, backend: str | None = None) -> QueryBackend:
+def make_backend(db_path: str | Path | None = None, backend: str | None = None, interval: str = "hourly") -> QueryBackend:
     """Factory used by the runner. Defaults to SQLite over the per-run feed db."""
     backend = (backend or os.environ.get(QueryConfig().backend_env) or "sqlite").strip().lower()
     if backend == "zetaris":
-        return ZetarisJDBCBackend()
+        return ZetarisJDBCBackend(interval)
     if db_path is None:
         raise ValueError("SQLite backend needs a db_path")
     return SQLiteBackend(db_path)

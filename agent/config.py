@@ -56,16 +56,23 @@ class QueryConfig:
     backend_env: str = "QUERY_BACKEND"           # "sqlite" | "zetaris"
     row_limit: int = 500                          # max rows returned per call
     timeout_s: float = 5.0                        # per-query wall clock
+    zetaris_timeout_s: float = 30.0               # remote engine: per-query wall clock
     calls_per_decision: int = 8                   # per-decision call budget
 
 
 # Agent-facing released-feed tables. Each is exposed to SQL as a CTE already filtered
 # by `released_at <= as_of`; the agent may only name these. Keep in sync with the
-# columns the runner materialises from the simulator feed.
+# columns the runner materialises from the simulator feed and with
+# simulator/scripts/publish_zetaris.py, which loads the same columns into Zetaris.
+#
+# Every raw table also carries two hidden columns the agent never sees:
+#   _released_epoch  release time (epoch s); the cutoff filter
+#   _scope_epoch     the run-window column (epoch s) the lookback filter applies to
 FEED_TABLES: dict[str, dict] = {
     "prices": {
         "columns": ["symbol", "ts", "open", "high", "low", "close", "volume", "bar_end", "released_at"],
         "released_col": "released_at",
+        "scope_col": "ts",
         "description": (
             "Completed OHLCV bars released by the cutoff. One row per symbol per bar. "
             "`ts` is the bar start, `bar_end` its completion time, `released_at` when the "
@@ -78,6 +85,7 @@ FEED_TABLES: dict[str, dict] = {
             "source_url", "published_at", "available_at", "released_at",
         ],
         "released_col": "released_at",
+        "scope_col": "available_at",
         "description": (
             "Timestamped news / filing records released by the cutoff. `published_at`, "
             "`available_at` and `released_at` are all <= the decision cutoff. Titles are "

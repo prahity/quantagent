@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -35,7 +36,7 @@ if str(SIMULATOR) not in sys.path:
 
 from agent.config import QueryConfig, architecture_path  # noqa: E402
 from agent.memory import Memory  # noqa: E402
-from agent.query_tool import QueryTool, build_feed_db, make_backend  # noqa: E402
+from agent.query_tool import FeedScope, QueryTool, build_feed_db, make_backend  # noqa: E402
 
 PRICE_COLS = ["symbol", "ts", "open", "high", "low", "close", "volume", "bar_end", "released_at"]
 NEWS_COLS = ["event_id", "symbol", "provider", "form", "title", "summary", "source_url",
@@ -95,6 +96,24 @@ def collect_feed(service, run_id: str, symbols: list[str], as_of: str) -> tuple[
     return prices, news
 
 
+def feed_scope(state: dict) -> FeedScope:
+    """The rows the simulator released to this run, from its resolved config.
+
+    Mirrors Engine.__init__: price history starts `history_lookback_days` before `start`
+    (on bar `ts`), news `news_lookback_days` before it (on `available_at`). The Zetaris
+    tables hold the whole snapshot, so the query tool applies this to match the SQLite feed.
+    """
+    config = state["config"]
+    start = datetime.fromisoformat(config["start"]).replace(tzinfo=timezone.utc)
+    return FeedScope(
+        symbols=tuple(state["symbols"]),
+        from_epoch={
+            "prices": int((start - timedelta(days=config["history_lookback_days"])).timestamp()),
+            "news": int((start - timedelta(days=config["news_lookback_days"])).timestamp()),
+        },
+    )
+
+
 # ------------------------------------------------------------------ agent construction
 def build_agent(name: str, run_dir: Path):
     if name == "momentum":
@@ -120,7 +139,10 @@ def run(
     data: str = "auto",
     backend_kind: str | None = None,
     verbose: bool = True,
+    backend=None,
 ) -> dict:
+    """Run one agent against a fresh simulator account. `backend` injects a QueryBackend
+    (tests); otherwise one is built from `backend_kind` / QUERY_BACKEND."""
     run_config = dict(run_config or {})
     run_id = run_config.get("run_id") or f"run_{uuid.uuid4().hex[:8]}"
     run_config["run_id"] = run_id
@@ -141,9 +163,22 @@ def run(
     memory = Memory(run_dir / "memory.jsonl", run_id)
 
     agent = build_agent(agent_name, run_dir)
-    backend = make_backend(db_path=feed_db, backend=backend_kind)
-
     request = service.reset(run_config)
+    state = service.state(run_id)
+    scope = feed_scope(state)
+    if backend is None:
+        backend = make_backend(db_path=feed_db, backend=backend_kind, interval=state["config"]["interval"])
+    published = backend.published_feed
+    if published:
+        # The Zetaris feed must be the same frozen snapshot the simulator is replaying, and
+        # only that one: the feed CTEs do not filter on data_version.
+        loaded = backend.loaded_data_versions()
+        if loaded != {state["data_version"]}:
+            backend.close()
+            raise RuntimeError(
+                f"Zetaris feed does not hold data_version {state['data_version']!r} (found {sorted(loaded)}). "
+                "Run simulator/scripts/publish_zetaris.py first."
+            )
     if hasattr(agent, "start_run"):
         agent.start_run(run_id, request)
 
@@ -154,10 +189,12 @@ def run(
         request_id = request["request_id"]
         symbols = request["data"]["symbols"]
 
+        # collect_feed also asserts that nothing released after as_of is in the feed.
         prices, news = collect_feed(service, run_id, symbols, as_of)
-        build_feed_db(feed_db, prices, news)
+        if not published:
+            build_feed_db(feed_db, prices, news)
 
-        query_tool = QueryTool(backend, run_id, request_id, as_of, query_log, QueryConfig())
+        query_tool = QueryTool(backend, run_id, request_id, as_of, query_log, QueryConfig(), scope=scope)
         payload = agent.decide(request, query_tool, memory)
         result = service.submit_action(run_id, payload)
         ack = result["ack"]
@@ -186,6 +223,7 @@ def run(
         if report is not None:
             break
 
+    backend.close()
     summary = _summarize(service, run_id, report, step, query_log, data_label, agent_name)
     (run_dir / "run_summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     return summary
