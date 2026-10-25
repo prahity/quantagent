@@ -1,0 +1,39 @@
+    0 2025-01-02T14:30:00Z ok   order_1:accepted filled@248.9549
+    1 2025-01-03T14:30:00Z ok   step1_aapl_add:accepted filled@243.3843
+    2 2025-01-06T14:30:00Z ok   hold
+    3 2025-01-07T14:30:00Z ok   hold
+    4 2025-01-08T14:30:00Z ok   hold
+    5 2025-01-10T14:30:00Z ok   hold
+    6 2025-01-13T14:30:00Z ok   hold
+    7 2025-01-14T14:30:00Z ok   hold
+    8 2025-01-15T14:30:00Z ok   hold
+    9 2025-01-16T14:30:00Z ok   hold
+   10 2025-01-17T14:30:00Z ok   hold
+   11 2025-01-21T14:30:00Z ok   hold
+   12 2025-01-22T14:30:00Z ok   hold
+   13 2025-01-23T14:30:00Z ok   hold
+   14 2025-01-24T14:30:00Z ok   hold
+   15 2025-01-27T14:30:00Z ok   hold
+   16 2025-01-28T14:30:00Z ok   hold
+   17 2025-01-29T14:30:00Z ok   hold
+   18 2025-01-30T14:30:00Z ok   hold
+   19 2025-01-31T14:30:00Z ok   hold
+{
+  "run_id": "run_cbf46ce2",
+  "label": "nemotron-mem10-r2",
+  "interval": "daily",
+  "mode": "V1",
+  "steps": 20,
+  "initial_cash": 10000.0,
+  "final_equity": 9876.021692314149,
+  "net_profit": -123.97830768585118,
+  "return_pct": -1.2397830768585139,
+  "max_drawdown_pct": 2.575783137893668,
+  "sharpe": -2.188503616022117,
+  "fills": 2,
+  "rejections": 0,
+  "invalid_responses": 0,
+  "data_version": "snap-d5b9a15c35433e85",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "memory": 10
+}

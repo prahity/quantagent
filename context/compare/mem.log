@@ -1,0 +1,39 @@
+    0 2025-01-02T14:30:00Z ok   hold
+    1 2025-01-03T14:30:00Z ok   hold
+    2 2025-01-06T14:30:00Z ok   hold
+    3 2025-01-07T14:30:00Z ok   hold
+    4 2025-01-08T14:30:00Z ok   hold
+    5 2025-01-10T14:30:00Z ok   hold
+    6 2025-01-13T14:30:00Z ok   hold
+    7 2025-01-14T14:30:00Z ok   hold
+    8 2025-01-15T14:30:00Z ok   hold
+    9 2025-01-16T14:30:00Z ok   hold
+   10 2025-01-17T14:30:00Z ok   hold
+   11 2025-01-21T14:30:00Z ok   hold
+   12 2025-01-22T14:30:00Z ok   hold
+   13 2025-01-23T14:30:00Z ok   hold
+   14 2025-01-24T14:30:00Z ok   hold
+   15 2025-01-27T14:30:00Z ok   hold
+   16 2025-01-28T14:30:00Z ok   hold
+   17 2025-01-29T14:30:00Z ok   hold
+   18 2025-01-30T14:30:00Z ok   hold
+   19 2025-01-31T14:30:00Z ok   hold
+{
+  "run_id": "run_5740c2dc",
+  "label": "nemotron-mem10",
+  "interval": "daily",
+  "mode": "V1",
+  "steps": 20,
+  "initial_cash": 10000.0,
+  "final_equity": 10000.0,
+  "net_profit": 0.0,
+  "return_pct": 0.0,
+  "max_drawdown_pct": 0.0,
+  "sharpe": null,
+  "fills": 0,
+  "rejections": 0,
+  "invalid_responses": 0,
+  "data_version": "snap-d5b9a15c35433e85",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "memory": 10
+}

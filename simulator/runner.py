@@ -46,6 +46,8 @@ def run_agent(agent, reset, submit, feed: FeedReader, run_config: dict, verbose:
         payload = agent.decide(request, feed)
         result = submit(run_id, payload)
         ack = result["ack"]
+        if hasattr(agent, "observe"):
+            agent.observe(request, payload, ack)
         if verbose:
             tag = "ok  " if ack["accepted"] else "REJ "
             orders = ", ".join(f"{o['order_id']}:{o['status']}{(' ' + o['reason']) if o['reason'] else ''}" for o in ack["orders"]) or "hold"
@@ -69,7 +71,7 @@ def cmd_run(args) -> None:
         "run_id": args.run_id,
     }
     run_config = {k: v for k, v in run_config.items() if v is not None}
-    agent = load_agent(args.agent, args.script)
+    agent = _nemotron(args) if args.agent == "nemotron" else load_agent(args.agent, args.script)
 
     if args.server:
         client = SimClient(args.server)
@@ -91,7 +93,22 @@ def cmd_run(args) -> None:
         report = run_agent(agent, lambda _cfg: first, service.submit_action, holder["feed"], run_config, verbose=not args.quiet)
 
     keys = ["run_id", "label", "interval", "mode", "steps", "initial_cash", "final_equity", "net_profit", "return_pct", "max_drawdown_pct", "sharpe", "fills", "rejections", "invalid_responses", "data_version"]
-    print(json.dumps({k: report[k] for k in keys}, indent=2))
+    summary = {k: report[k] for k in keys}
+    if args.agent == "nemotron":
+        summary["model"] = agent.runtime.model
+        summary["memory"] = agent.memory
+    print(json.dumps(summary, indent=2))
+
+
+def _nemotron(args):
+    """Nemotron through Nightshift. Settings come from METERLESS_* in the environment."""
+    sys.path.insert(0, str(ROOT.parent))
+    from meterless.provider import MeterlessRuntime, TOKEN_SETTING, load_settings
+    from meterless.trader import NemotronTrader
+
+    settings = load_settings()
+    runtime = MeterlessRuntime(settings["base_url"], settings[TOKEN_SETTING], args.model or settings["model"])
+    return NemotronTrader(runtime, memory=args.memory)
 
 
 def cmd_replay(args) -> None:
@@ -111,8 +128,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="run an agent through a fresh simulator run")
-    run.add_argument("--agent", default="hold", choices=["hold", "buy_and_hold", "script"])
+    run.add_argument("--agent", default="hold", choices=["hold", "buy_and_hold", "script", "nemotron"])
     run.add_argument("--script", help="script id under agent/scripts/ or a path to a JSON file")
+    run.add_argument("--model", help="nemotron only: pinned model id, e.g. nvidia/nemotron-3-super-120b-a12b")
+    run.add_argument("--memory", type=int, default=0, help="nemotron only: earlier decisions from this run kept in the prompt")
     run.add_argument("--interval", default="hourly", choices=["hourly", "daily"])
     run.add_argument("--mode", default="V1", choices=["V1", "V2"])
     run.add_argument("--start", required=True, help="YYYY-MM-DD inclusive")

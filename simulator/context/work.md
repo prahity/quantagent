@@ -62,7 +62,7 @@ For a decision at `as_of`:
 
 - A bar is visible only after it has completed (`bar_end <= as_of`). The high, low, close, and volume of the current bar are not known at its open.
 - A filing is visible only when `published_at`, `available_at`, and `released_at` are all `<= as_of`.
-- `published_at` for EDGAR is the acceptance time converted to real UTC. The submissions API labels Eastern local time as `Z`. `sec_acceptance_to_utc` corrects that. `acceptance_api_raw` is kept.
+- `published_at` for EDGAR is the acceptance time converted to real UTC. The submissions API now returns true UTC; `sec_acceptance_to_utc` parses it. `acceptance_api_raw` is kept.
 - If acceptance was after hours and EDGAR assigned the next filing date, `available_at` is 06:00 America/New_York on that filing date.
 - Asking the feed for an `as_of` past the run clock raises `FutureAccessError`, which the API returns as HTTP 403.
 
@@ -104,7 +104,7 @@ Cadence is one request per hourly or daily bar, chosen per run. `decision_interv
 
 - Yahoo hourly history with an explicit old `period1` returns 422. The collector requests `range=730d` and filters locally.
 - Pandas 3 round-trips parquet timestamps at microseconds. The store normalizes them to nanoseconds. Mixing resolutions makes "no decision boundaries" or breaks equality checks.
-- The EDGAR acceptance fix was checked against filing index pages in both EST and EDT. Do not "correct" it by trusting the `Z` suffix.
+- EDGAR's submissions API used to return a skewed `acceptanceDateTime` (Eastern time plus twice the offset). By 2026-10-25 it returns true UTC, checked against index pages in EST and EDT, so `sec_acceptance_to_utc` now trusts the `Z`. If a rebuilt manifest shows filing times shifted by 4-5 hours, re-check the API before running agents.
 - `sim/snapshot/` and `runs/` are gitignored on purpose. After a fresh clone, run `python scripts/fetch_data.py` once. The manifest says which `data_version` to expect.
 
 ## Explicitly not built
