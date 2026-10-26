@@ -39,6 +39,7 @@ from meterless import notebook  # noqa: E402
 from meterless.provider import TOKEN_SETTING, MeterlessRuntime, load_settings  # noqa: E402
 from meterless.query import open_analysis_source  # noqa: E402
 from meterless.trader import NemotronTrader  # noqa: E402
+from research.archive import open_research_archive, write_research_audit  # noqa: E402
 
 DATA_END = date(2026, 7, 21)
 METRICS = ["run_id", "return_pct", "net_profit", "max_drawdown_pct", "sharpe", "fills", "rejections", "invalid_responses", "turnover"]
@@ -68,6 +69,7 @@ def simulate(agent, cfg: dict) -> tuple[dict, SimulatorService]:
     first = service.reset(cfg)
     feed = LocalFeedReader(service, first["run_id"])
     report = run_agent(agent, lambda _cfg: first, service.submit_action, feed, cfg, verbose=True)
+    write_research_audit(agent, ROOT / "runs" / report["run_id"])
     return report, service
 
 
@@ -166,6 +168,7 @@ def main() -> None:
                         help="keep the seed notebook fixed across months (default). --no-forget-notes updates and carries it")
     parser.add_argument("--prompt-style", default="default", choices=["default", "deploy", "equal"],
                         help="trading prompt: default, deploy idle cash, or equal-weight entry when flat")
+    parser.add_argument("--research-archive", help="same pinned Exa archive for both arms; defaults to EXA_RESEARCH_ARCHIVE")
     args = parser.parse_args()
     if args.seed_notes in ("", "-"):
         args.seed_notes = ""
@@ -173,10 +176,16 @@ def main() -> None:
     out = Path(args.out).resolve()
     (out / "notebook").mkdir(parents=True, exist_ok=True)
     done = set()
+    previous_rows = []
     if (out / "results.jsonl").exists():
-        done = {(r["arm"], r["month"]) for r in map(json.loads, (out / "results.jsonl").read_text().splitlines())}
+        previous_rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+        done = {(r["arm"], r["month"]) for r in previous_rows}
 
     settings = load_settings()
+    research = open_research_archive(args.research_archive)
+    manifest = research.manifest if research else []
+    if any(row.get("research_manifest", []) != manifest for row in previous_rows):
+        parser.error("research archive differs from this output's recorded trials; choose a fresh --out directory")
     periods = one_window(args.start, args.days) if args.days else months(args.first, args.last)
 
     extra = {} if args.thinking == "on" else {"chat_template_kwargs": {"enable_thinking": False}}
@@ -200,12 +209,12 @@ def main() -> None:
     def row(arm: str, month: str, report: dict, b: dict, **extra) -> dict:
         return {"arm": arm, "month": month, "model": args.model, "thinking": args.thinking, **{k: report[k] for k in METRICS},
                 "bench_return_pct": b["return_pct"], "excess_pct": report["return_pct"] - b["return_pct"],
-                "runtime_errors": runtime_errors(report), **extra}
+                "runtime_errors": runtime_errors(report), "research_manifest": research.manifest if research else [], **extra}
 
     def nomem_month(spec) -> None:
         month, start, end = spec
         cfg = config(month, start, end, "nomem")
-        report, _ = simulate(NemotronTrader(runtime(), memory=0, retries=args.retries, prompt_style=args.prompt_style), cfg)
+        report, _ = simulate(NemotronTrader(runtime(), memory=0, retries=args.retries, prompt_style=args.prompt_style, research=research), cfg)
         record(out, row("nomem", month, report, bench(month, start, end), prompt_style=args.prompt_style))
 
     def memory_arm(analysis) -> None:
@@ -226,6 +235,7 @@ def main() -> None:
                 source=source,
                 recall=args.recall,
                 prompt_style=args.prompt_style,
+                research=research,
             )
             report, service = simulate(agent, cfg)
             b = bench(month, start, end)
