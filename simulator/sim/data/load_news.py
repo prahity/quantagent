@@ -53,18 +53,16 @@ NEWS_COLUMNS = [
 
 
 def sec_acceptance_to_utc(api_value: str) -> pd.Timestamp:
-    """Correct the submissions-API ``acceptanceDateTime`` quirk.
+    """Parse the submissions-API ``acceptanceDateTime`` as true UTC.
 
-    The API labels the value ``Z`` but it equals the Eastern local acceptance time plus
-    twice the ET/UTC offset (verified against filing index pages for EST and EDT
-    filings: index ``2025-01-30 16:30:23`` ET -> API ``2025-01-31T02:30:23Z``;
-    index ``2025-07-31 16:30:25`` ET -> API ``2025-08-01T00:30:25Z``). True UTC is the
-    API value minus the ET offset in force at that time.
+    Until October 2026 the API returned the Eastern acceptance time plus twice the
+    ET/UTC offset, and this function subtracted one offset. The API now returns real
+    UTC (index ``2025-01-30 16:30:23`` ET -> API ``2025-01-30T21:30:23Z``; index
+    ``2025-01-22 17:15:39`` ET -> API ``2025-01-22T22:15:39Z``, checked 2026-10-25).
+    Applying the old correction now dates filings 4-5 hours before they existed.
     """
     raw = pd.Timestamp(api_value)
-    raw = raw.tz_convert("UTC") if raw.tzinfo else raw.tz_localize("UTC")
-    offset = raw.tz_convert(ET).utcoffset()
-    return raw + offset  # offset is negative (-5h / -4h)
+    return raw.tz_convert("UTC") if raw.tzinfo else raw.tz_localize("UTC")
 
 
 def _sec_client(user_agent: str | None = None) -> httpx.Client:

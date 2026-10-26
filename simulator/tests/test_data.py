@@ -3,11 +3,11 @@ import pandas as pd
 from sim.data.load_news import _conservative_available_at, sec_acceptance_to_utc
 
 
-def test_sec_acceptance_quirk_is_corrected_for_est_and_edt():
+def test_sec_acceptance_is_true_utc_for_est_and_edt():
     # Verified against EDGAR filing index pages ("Accepted" is Eastern local time).
-    assert sec_acceptance_to_utc("2025-01-31T02:30:23.000Z") == pd.Timestamp("2025-01-30T21:30:23Z")  # 16:30:23 EST
-    assert sec_acceptance_to_utc("2025-08-01T00:30:25.000Z") == pd.Timestamp("2025-07-31T20:30:25Z")  # 16:30:25 EDT
-    assert sec_acceptance_to_utc("2025-01-31T16:01:27.000Z") == pd.Timestamp("2025-01-31T11:01:27Z")  # 06:01:27 EST
+    assert sec_acceptance_to_utc("2025-01-30T21:30:23.000Z") == pd.Timestamp("2025-01-30T21:30:23Z")  # 16:30:23 EST
+    assert sec_acceptance_to_utc("2025-07-31T20:30:25.000Z") == pd.Timestamp("2025-07-31T20:30:25Z")  # 16:30:25 EDT
+    assert sec_acceptance_to_utc("2025-01-22T22:15:39.000Z") == pd.Timestamp("2025-01-22T22:15:39Z")  # 17:15:39 EST
 
 
 def test_after_hours_filing_becomes_available_next_morning():

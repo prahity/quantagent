@@ -1,12 +1,12 @@
 # AI Trader — Learning to query a growing Zetaris knowledge base
 
-**Sai Ramsankar & Prahit Yaugand** · Open Agent Hackathon 2026 · Track 03: Reasoning Architecture
+**Sai Ramsankar, Prahit Yaugand, Ryan Varghese, and Anay Joshi** · Open Agent Hackathon 2026 · Track 03: Reasoning Architecture
 
 An adaptive trading-agent research system in which **Zetaris builds the market intelligence**, **Meterless coordinates strategy experiments and memory**, **Nemotron reasons and produces actions**, and an **independent simulator/evaluator measures results**.
 
 The project investigates whether a fixed Nemotron model can make better decisions as Zetaris accumulates eligible market history and Meterless remembers how earlier analyses and decisions worked out. The learned behavior includes what to investigate, which SQL queries to make, and how to turn returned evidence into actions. Its target is the best validated strategy found within a declared budget, with traceable decisions and controlled information access.
 
-**Status:** the independent simulator/evaluator (build-guide Phase 2) is implemented in [`simulator/`](simulator/README.md) and runs on real 2024–2026 market data. That folder is only the market environment, its scripted test harness, and its web UI. The Zetaris, Meterless, and Nemotron agent code described below remains to be implemented at the repository root.
+**Status:** the simulator is in [`simulator/`](simulator/README.md) and runs on real 2024–2026 market data. The Meterless client, the Nemotron trader, and the SQL adapter are in [`meterless/`](meterless/README.md). Setup for a new machine, including every file git leaves out, is [`context/session-handoff.md`](context/session-handoff.md). The sections below are the research design. Zetaris views are selected with `ANALYSIS_BACKEND=zetaris`; the default backend is the local sqlite snapshot.
 
 ## Data — Zetaris
 
@@ -67,7 +67,7 @@ Meterless coordinates a complete strategy-improvement round:
 
 Maintain a directed acyclic history linking prior rules, analysis questions, query attempts/results, decisions, predictions, actions, measured outcomes and revised rules, alongside strategy-version lineage. Preserve successful and failed attempts. Each rule records its scope, supporting cases, counterexamples, confidence and version; one profitable trade does not establish a rule. Keep complete records durable and retrieve a bounded relevant context for each prompt.
 
-The [Swarms README](https://github.com/Meterless/Swarms) describes orchestration and memory/context features. The trading-history schema, feedback capture, automated controller and Zetaris synchronization are project integrations to verify. Its task-execution DAG and our persistent strategy/decision history serve different purposes.
+Planning reads Zetaris. A joined result over released prices, filings, and completed trials is what selects the next hypothesis. Meterless retrieves the prior decision, outcome, and analytical rule that say which join to run. Nemotron writes that SQL and the candidate policy. The simulator scores the candidate. A parallel writing swarm does not see the cutoff or the ledger, so it is not part of this loop. The trading-history schema, feedback capture, and Zetaris synchronization are project integrations to verify.
 
 ## Nemotron
 
@@ -154,7 +154,6 @@ The [linked Google rules document and selected tab](https://docs.google.com/docu
 
 - [Zetaris Cloud](https://www.zetaris.com/cloud) and [AgentFlow](https://www.zetaris.com/agentflow)
 - [Zetaris SQL Guide](https://kbase.zetaris.com/knowledge/sql-guide) and [row/column access controls](https://kbase.zetaris.com/knowledge/controlling-row-level-access)
-- [Meterless Swarms](https://github.com/Meterless/Swarms)
 - [NVIDIA Nemotron usage example](https://docs.nvidia.com/nemotron/0.1.0/use-case-examples/Simple%20Nemotron-3-Nano%20Usage%20Example/README.html)
 - [HKUDS AI-Trader](https://github.com/HKUDS/AI-Trader)
 - [Co-LMLM: Continuous-Query Limited Memory Language Models](https://arxiv.org/abs/2607.07707)

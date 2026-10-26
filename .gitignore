@@ -4,8 +4,13 @@
 
 # Per-run artifacts written by the agent runner
 runs/
-
 # Python caches
 __pycache__/
 *.pyc
 drivers/
+# Secrets. Never commit.
+.env.*
+!.env.example
+.pytest_cache/
+.env
+.venv/

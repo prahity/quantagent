@@ -1,0 +1,70 @@
+    0 2024-01-16T14:30:00Z ok   hold
+    0 2024-01-16T14:30:00Z ok   hold
+    1 2024-01-17T14:30:00Z ok   hold
+    2 2024-01-18T14:30:00Z ok   decision_00002-0:accepted filled@186.1086
+    3 2024-01-19T14:30:00Z ok   hold
+    4 2024-01-22T14:30:00Z ok   decision_00004-0:accepted filled@400.0600
+    5 2024-01-23T14:30:00Z ok   hold
+    6 2024-01-24T14:30:00Z ok   hold
+    7 2024-01-25T14:30:00Z ok   hold
+    8 2024-01-26T14:30:00Z ok   hold
+    9 2024-01-29T14:30:00Z ok   hold
+   10 2024-01-30T14:30:00Z ok   hold
+   11 2024-01-31T14:30:00Z ok   hold
+    1 2024-01-17T14:30:00Z ok   decision_00001-0:accepted filled@181.2881
+    2 2024-01-18T14:30:00Z ok   hold
+    3 2024-01-19T14:30:00Z ok   hold
+    4 2024-01-22T14:30:00Z ok   hold
+   12 2024-02-01T14:30:00Z ok   hold
+   13 2024-02-02T14:30:00Z ok   hold
+   14 2024-02-05T14:30:00Z ok   hold
+   15 2024-02-06T14:30:00Z ok   hold
+   16 2024-02-07T14:30:00Z ok   hold
+   17 2024-02-08T14:30:00Z ok   hold
+   18 2024-02-09T14:30:00Z ok   hold
+   19 2024-02-12T14:30:00Z ok   hold
+   20 2024-02-13T14:30:00Z ok   hold
+   21 2024-02-14T14:30:00Z ok   hold
+    0 2024-01-16T14:30:00Z ok   bh_00:accepted filled@182.1782, bh_01:accepted filled@393.6994, bh_02:accepted filled@475.3075
+    1 2024-01-17T14:30:00Z ok   hold
+    2 2024-01-18T14:30:00Z ok   hold
+    3 2024-01-19T14:30:00Z ok   hold
+    4 2024-01-22T14:30:00Z ok   hold
+    5 2024-01-23T14:30:00Z ok   hold
+    6 2024-01-24T14:30:00Z ok   hold
+    7 2024-01-25T14:30:00Z ok   hold
+    8 2024-01-26T14:30:00Z ok   hold
+    9 2024-01-29T14:30:00Z ok   hold
+   10 2024-01-30T14:30:00Z ok   hold
+   11 2024-01-31T14:30:00Z ok   hold
+   12 2024-02-01T14:30:00Z ok   hold
+   13 2024-02-02T14:30:00Z ok   hold
+   14 2024-02-05T14:30:00Z ok   hold
+   15 2024-02-06T14:30:00Z ok   hold
+   16 2024-02-07T14:30:00Z ok   hold
+   17 2024-02-08T14:30:00Z ok   hold
+   18 2024-02-09T14:30:00Z ok   hold
+   19 2024-02-12T14:30:00Z ok   hold
+   20 2024-02-13T14:30:00Z ok   hold
+   21 2024-02-14T14:30:00Z ok   hold
+nomem   2024-01-16+30d  agent  +0.31%  b&h  +2.37%  fills 2
+    5 2024-01-23T14:30:00Z ok   hold
+    6 2024-01-24T14:30:00Z ok   hold
+    7 2024-01-25T14:30:00Z ok   hold
+    8 2024-01-26T14:30:00Z ok   hold
+    9 2024-01-29T14:30:00Z ok   decision_00009-0:accepted filled@192.0292
+   10 2024-01-30T14:30:00Z ok   hold
+   11 2024-01-31T14:30:00Z ok   hold
+   12 2024-02-01T14:30:00Z ok   hold
+   13 2024-02-02T14:30:00Z ok   hold
+   14 2024-02-05T14:30:00Z ok   hold
+   15 2024-02-06T14:30:00Z ok   hold
+   16 2024-02-07T14:30:00Z ok   hold
+   17 2024-02-08T14:30:00Z ok   hold
+   18 2024-02-09T14:30:00Z ok   hold
+   19 2024-02-12T14:30:00Z ok   hold
+   20 2024-02-13T14:30:00Z ok   hold
+   21 2024-02-14T14:30:00Z ok   hold
+memory  2024-01-16+30d  agent  -0.52%  b&h  +2.37%  fills 2
+memory  months  1  mean -0.52%  mean excess vs b&h -2.88%  first-half excess +nan%  second-half excess -2.88%  compounded -0.52%  beat b&h 0/1
+nomem   months  1  mean +0.31%  mean excess vs b&h -2.06%  first-half excess +nan%  second-half excess -2.06%  compounded +0.31%  beat b&h 0/1

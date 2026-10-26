@@ -4,7 +4,7 @@ The independent market environment for AI Trader. It owns the clock, which recor
 
 `agent/` here is the deterministic test harness (`hold`, `buy_and_hold`, and JSON scripts). It is not the trading agent. `sim/` never imports `agent/`, and `agent/` never imports `sim/`. `runner.py` is the only piece that connects them.
 
-Run every command below from this folder.
+Run every command below from this folder. After a clone, `sim/snapshot/`, `runs/`, `.venv/`, and `web/node_modules/` are absent. The commands that rebuild them are in [`../context/session-handoff.md`](../context/session-handoff.md).
 
 | Path | Role |
 | --- | --- |

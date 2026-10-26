@@ -21,3 +21,4 @@ jpype1>=1.5
 
 # --- tests ---
 # Tests use the stdlib `unittest` runner; no extra dependency required.
+httpx
