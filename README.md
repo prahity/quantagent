@@ -1,6 +1,6 @@
 # AI Trader — Learning to query a growing Zetaris knowledge base
 
-**Sai Ramsankar & Prahit Yaugand** · Open Agent Hackathon 2026 · Track 03: Reasoning Architecture
+**Sai Ramsankar, Prahit Yaugand, Ryan Varghese, and Anay Joshi** · Open Agent Hackathon 2026 · Track 03: Reasoning Architecture
 
 An adaptive trading-agent research system in which **Zetaris builds the market intelligence**, **Meterless coordinates strategy experiments and memory**, **Nemotron reasons and produces actions**, and an **independent simulator/evaluator measures results**.
 
