@@ -1,8 +1,12 @@
 """Analysis queries. The agent names `bars` and `filings`. The backend binds `as_of`.
 
-`ANALYSIS_BACKEND=sqlite` reads the simulator snapshot. `ANALYSIS_BACKEND=zetaris`
-sends the same request to `ZETARIS_QUERY_URL`. Agent SQL does not change between them.
-Memory is not stored here. H-MEM decides what to remember and what to ask next.
+The default backend is the Zetaris JDBC lake (`ANALYSIS_BACKEND=zetaris`, or unset).
+`bars` is `feed_prices_daily` UNION `feed_prices_hourly`; `filings` is `feed_news`.
+The cutoff is a server-side CTE on `_released_epoch`, so the model's SQL cannot move it.
+`ANALYSIS_BACKEND=sqlite` reads the simulator snapshot instead (the without-Zetaris arm).
+
+`ZetarisSource` is the unused HTTP client (`ZETARIS_QUERY_URL`). It is not the default.
+Memory is not stored here.
 """
 from __future__ import annotations
 
@@ -13,10 +17,23 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_QUALIFIED = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+_DEFAULT_DAILY = "aitrader_lake.feed.feed_prices_daily"
+_DEFAULT_HOURLY = "aitrader_lake.feed.feed_prices_hourly"
+_DEFAULT_NEWS = "aitrader_lake.feed.feed_news"
+_DEFAULT_MANIFEST = "aitrader_lake.feed.feed_manifest"
+# Names the model must not reach. The CTE below is the only way into the lake.
+_HIDDEN_SQL = re.compile(
+    r"feed_prices|feed_news|feed_manifest|aitrader_lake|_released|data_version|price_history|filing_history",
+    re.IGNORECASE,
+)
 
 SCHEMA = """Relations already limited to records available at this decision's as_of. A date filter cannot reveal later rows.
 bars(symbol, interval, ts, open, high, low, close, volume)
@@ -368,13 +385,220 @@ class ZetarisSource:
         )
 
 
-def open_analysis_source(backend: str | None = None, snapshot_dir: Path | None = None) -> AnalysisSource:
-    """`sqlite` is the local backend. `zetaris` is the same interface on Zetaris."""
-    chosen = (backend if backend is not None else os.environ.get("ANALYSIS_BACKEND", "sqlite")).strip().lower()
+def _load_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(_REPO_ROOT / ".env")
+
+
+def _qualified(name: str, label: str) -> str:
+    if not _QUALIFIED.match(name):
+        raise ValueError(f"{label} must be a dotted table name, not {name!r}")
+    return name
+
+
+def _manifest_version(snapshot_dir: Path | None) -> str | None:
+    """data_version pinned in the simulator manifest, when that file is present."""
+    if snapshot_dir is None:
+        return None
+    path = Path(snapshot_dir).parent.parent / "config" / "snapshot_manifest.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8")).get("data_version")
+
+
+def _plain(value: Any) -> Any:
+    """JDBC values to JSON-friendly Python. JPype boxes subclass int/float and unbox."""
+    if value is None or type(value) in (str, int, float, bool):
+        return value
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    return str(value)
+
+
+def _match_sqlite_cell(column: str, value: Any) -> Any:
+    """Round and reformat so a lake row compares equal to SqliteSource's row."""
+    value = _plain(value)
+    if value is None:
+        return "" if column in ("form", "title", "symbol") else None
+    if column in ("open", "high", "low", "close") and isinstance(value, (int, float)):
+        return round(float(value), 4)
+    if column == "volume" and isinstance(value, (int, float)):
+        return int(value)
+    if column == "title":
+        return str(value)[:200]
+    if column in ("ts", "published_at", "available_at"):
+        try:
+            return utc_text(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return value
+
+
+class JdbcZetarisSource:
+    """Analysis queries against the published Zetaris JDBC lake.
+
+    The model still names `bars` and `filings`. This class maps those onto
+    `feed_prices_daily` / `feed_prices_hourly` and `feed_news`, and wraps every
+    statement in a CTE whose `_released_epoch <= as_of` predicate the model
+    cannot edit. The manifest must hold exactly one data_version.
+    """
+
+    name = "zetaris"
+    schema_text = SCHEMA
+
+    def __init__(
+        self,
+        daily_table: str = _DEFAULT_DAILY,
+        hourly_table: str = _DEFAULT_HOURLY,
+        news_table: str = _DEFAULT_NEWS,
+        manifest_table: str = _DEFAULT_MANIFEST,
+        *,
+        url: str = "",
+        driver: str = "",
+        jar: str = "",
+        user: str = "",
+        password: str = "",
+        expected_version: str | None = None,
+        connect: bool = True,
+    ):
+        self.daily_table = _qualified(daily_table, "daily prices")
+        self.hourly_table = _qualified(hourly_table, "hourly prices")
+        self.news_table = _qualified(news_table, "filings")
+        self.manifest_table = _qualified(manifest_table, "manifest")
+        self._url = url
+        self._driver = driver
+        self._jar = jar
+        self._user = user
+        self._password = password
+        self.data_version = ""
+        self._conn = None
+        if connect:
+            self._require_login()
+            self._check_version(expected_version)
+
+    @classmethod
+    def from_env(cls, expected_version: str | None = None) -> "JdbcZetarisSource":
+        _load_dotenv()
+        missing = [name for name in ("ZETARIS_JDBC_URL", "ZETARIS_JDBC_DRIVER", "ZETARIS_AGENT_USER") if not os.environ.get(name)]
+        if missing:
+            raise RuntimeError(f"Zetaris JDBC lake missing config: {', '.join(missing)}")
+        return cls(
+            os.environ.get("ZETARIS_FEED_PRICES_DAILY") or _DEFAULT_DAILY,
+            os.environ.get("ZETARIS_FEED_PRICES_HOURLY") or _DEFAULT_HOURLY,
+            os.environ.get("ZETARIS_FEED_NEWS") or _DEFAULT_NEWS,
+            os.environ.get("ZETARIS_FEED_MANIFEST") or _DEFAULT_MANIFEST,
+            url=os.environ["ZETARIS_JDBC_URL"],
+            driver=os.environ["ZETARIS_JDBC_DRIVER"],
+            jar=os.environ.get("ZETARIS_JDBC_JAR") or "",
+            user=os.environ["ZETARIS_AGENT_USER"],
+            password=os.environ.get("ZETARIS_AGENT_PASSWORD") or "",
+            expected_version=expected_version,
+        )
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def _require_login(self) -> None:
+        missing = [name for name, value in (("url", self._url), ("driver", self._driver), ("user", self._user)) if not value]
+        if missing:
+            raise RuntimeError(f"Zetaris JDBC lake missing config: {', '.join(missing)}")
+
+    def _connection(self):
+        if self._conn is None:
+            import jaydebeapi  # lazy: SQLite runs need no Java
+
+            self._conn = jaydebeapi.connect(self._driver, self._url, [self._user, self._password], self._jar or None)
+        return self._conn
+
+    def _fetch(self, sql: str) -> tuple[list[str], list[tuple]]:
+        cur = self._connection().cursor()
+        try:
+            cur.execute(sql)
+            columns = [str(item[0]).lower() for item in cur.description] if cur.description else []
+            return columns, list(cur.fetchall())
+        finally:
+            cur.close()
+
+    def _check_version(self, expected: str | None) -> None:
+        try:
+            _columns, rows = self._fetch(f"SELECT data_version FROM {self.manifest_table}")
+        except Exception as exc:
+            raise RuntimeError(f"Zetaris manifest {self.manifest_table} could not be read: {exc}") from exc
+        found = {str(_plain(row[0])) for row in rows if row and row[0] is not None}
+        if len(found) != 1:
+            raise RuntimeError(f"Zetaris lake must hold exactly one data_version (found {sorted(found)})")
+        self.data_version = next(iter(found))
+        if expected and self.data_version != expected:
+            raise RuntimeError(
+                f"Zetaris lake data_version {self.data_version!r} does not match the simulator snapshot {expected!r}. "
+                "Reload with simulator/scripts/publish_zetaris.py --replace."
+            )
+
+    def prepare(self, sql: str, as_of: str) -> str:
+        """Wrap one agent statement. The cutoff literal is not part of the agent's SQL."""
+        statement = one_select(sql)
+        if _HIDDEN_SQL.search(statement):
+            raise ValueError("query the released relations bars and filings")
+        cutoff = int(datetime.fromisoformat(utc_text(as_of).replace("Z", "+00:00")).timestamp())
+        bars = (
+            "bars AS ("
+            f"SELECT symbol, 'daily' AS interval, ts, open, high, low, close, volume "
+            f"FROM {self.daily_table} WHERE _released_epoch <= {cutoff} "
+            "UNION ALL "
+            f"SELECT symbol, 'hourly' AS interval, ts, open, high, low, close, volume "
+            f"FROM {self.hourly_table} WHERE _released_epoch <= {cutoff})"
+        )
+        filings = (
+            "filings AS ("
+            "SELECT symbol, form, title, published_at, available_at "
+            f"FROM {self.news_table} WHERE _released_epoch <= {cutoff})"
+        )
+        bound = f"{bars}, {filings}"
+        if statement.lower().startswith("with"):
+            wrapped = f"WITH {bound}, {statement[4:].lstrip()}"
+        else:
+            wrapped = f"WITH {bound} {statement}"
+        return f"SELECT * FROM ({wrapped}) LIMIT {_ROW_LIMIT + 1}"
+
+    def execute(self, request: QueryRequest) -> QueryResult:
+        started = time.perf_counter()
+        try:
+            statement = self.prepare(request.sql, request.as_of)
+        except (ValueError, TypeError) as exc:
+            return _result(request, self.name, self.data_version, started, error=str(exc))
+        try:
+            columns, fetched = self._fetch(statement)
+        except Exception as exc:
+            return _result(request, self.name, self.data_version, started, error=str(exc).splitlines()[0][-300:])
+        truncated = len(fetched) > _ROW_LIMIT
+        rows = []
+        for raw in fetched[:_ROW_LIMIT]:
+            rows.append({columns[i]: _match_sqlite_cell(columns[i], raw[i]) for i in range(len(columns))})
+        return _result(request, self.name, self.data_version, started, columns=columns, rows=rows, truncated=truncated)
+
+
+def open_analysis_source(backend: str | None = None, snapshot_dir: Path | None = None, *, expected_version: str | None = None) -> AnalysisSource:
+    """`zetaris` (the default) is the JDBC lake. `sqlite` is the local comparison backend."""
+    _load_dotenv()
+    chosen = (backend if backend is not None else os.environ.get("ANALYSIS_BACKEND", "zetaris")).strip().lower()
     if chosen == "sqlite":
         if snapshot_dir is None:
             raise ValueError("sqlite backend needs the simulator snapshot directory")
         return SqliteSource.open_snapshot(snapshot_dir)
     if chosen == "zetaris":
-        return ZetarisSource.from_env()
+        pinned = expected_version if expected_version is not None else _manifest_version(snapshot_dir)
+        return JdbcZetarisSource.from_env(expected_version=pinned)
     raise ValueError(f"unknown analysis backend {chosen}")

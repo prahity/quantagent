@@ -6,6 +6,7 @@ tab and is never read here.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse, urlunparse
@@ -20,6 +21,10 @@ TOKEN_SETTING = "meterless_runtime_token"
 DETECT_PORTS = (8088, 8090, 8787, 11434)
 DETECT_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHAT_TIMEOUT = 180.0
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 1)
 
 _STRIP_SUFFIXES = ("/v1/chat/completions", "/v1/models", "/healthz", "/v1")
 
@@ -91,6 +96,19 @@ def load_settings(environ: dict[str, str] | None = None) -> dict[str, str]:
 
 
 @dataclass
+class CompletionRecord:
+    """One chat call. No prompt and no token are stored here."""
+
+    status: int | None
+    latency_ms: float
+    finish_reason: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    error: str | None = None
+
+
+@dataclass
 class Probe:
     status: str  # online | unauthorized | offline
     base_url: str
@@ -121,6 +139,7 @@ class MeterlessRuntime:
         self.extra_body = extra_body or {}
         self._client = client or httpx.Client(timeout=CHAT_TIMEOUT)
         self._owns_client = client is None
+        self.last_completion: CompletionRecord | None = None
 
     def close(self) -> None:
         if self._owns_client:
@@ -166,6 +185,7 @@ class MeterlessRuntime:
         if not self.token or self.token == PLACEHOLDER_TOKEN:
             raise ProviderError("unauthorized", "runtime token is missing or the placeholder rt-local")
         chosen = model or self.model
+        started = time.perf_counter()
         try:
             body = {**self.extra_body, "model": chosen, "messages": [{"role": "user", "content": content}]}
             if max_tokens is not None:
@@ -177,15 +197,31 @@ class MeterlessRuntime:
                 timeout=CHAT_TIMEOUT,
             )
         except httpx.HTTPError as exc:
+            self.last_completion = CompletionRecord(None, _elapsed_ms(started), None, None, None, None, type(exc).__name__)
             raise ProviderError("offline", "runtime did not answer") from exc
+        elapsed = _elapsed_ms(started)
         if response.status_code in (401, 403):
+            self.last_completion = CompletionRecord(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}")
             raise ProviderError("unauthorized", "runtime rejected the token")
         if response.status_code != 200:
+            self.last_completion = CompletionRecord(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}")
             raise ProviderError("offline", f"runtime returned HTTP {response.status_code}")
         payload = response.json()
-        message = payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        message = choice["message"]["content"]
         if not isinstance(message, str):
+            self.last_completion = CompletionRecord(response.status_code, elapsed, choice.get("finish_reason"), None, None, None, "content was not a string")
             raise ProviderError("offline", "runtime content was not a string")
+        usage = payload.get("usage") or {}
+        self.last_completion = CompletionRecord(
+            response.status_code,
+            elapsed,
+            choice.get("finish_reason"),
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            usage.get("total_tokens"),
+            None,
+        )
         return message
 
 

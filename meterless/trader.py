@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from meterless.action import fit_orders, structure_action
@@ -56,6 +57,7 @@ _BARS = 10
 _QUERY_LIMIT = 1
 _MAX_TOKENS = 700
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_SIM_RUNS = Path(__file__).resolve().parents[1] / "simulator" / "runs"
 
 _QUERY_PROMPT = """You are the trading agent. Historical prices and filings are in the SQL relations below, already cut off at this decision's as_of. Use SQL when you need history. Do not estimate a return, a price, or a filing date.
 {schema}
@@ -89,8 +91,11 @@ def _closes(visible: dict) -> dict[str, float]:
     return prices
 
 
-def _ready(parsed: dict, request: dict, visible: dict) -> dict:
-    return fit_orders(structure_action(parsed, request), request, _closes(visible))
+def _ready(parsed: dict, request: dict, visible: dict) -> tuple[dict, list[dict]]:
+    """Return the repaired action and the orders the model actually asked for."""
+    structured = structure_action(parsed, request)
+    original = [dict(order) for order in structured["orders"]]
+    return fit_orders(structured, request, _closes(visible)), original
 
 
 def _hold(request: dict, reason: str) -> dict:
@@ -155,6 +160,7 @@ class NemotronTrader:
         source: AnalysisSource | None = None,
         recall: str = "sql",
         prompt_style: str = "default",
+        log_dir: str | Path | None = None,
     ):
         self.runtime = runtime
         self.memory = memory
@@ -163,8 +169,10 @@ class NemotronTrader:
         self.source = source
         self.recall = recall
         self.prompt_style = prompt_style if prompt_style in _PROMPT_STYLES else "default"
+        self.log_dir = Path(log_dir) if log_dir else None
         self.log: list[dict] = []
         self.queries: list[QueryResult] = []
+        self.repairs: list[dict] = []
 
     def _trade_prompt(self) -> str:
         return _PROMPT_STYLES[self.prompt_style]
@@ -212,14 +220,44 @@ class NemotronTrader:
             visible.update(_market(request, feed))
         return visible
 
+    def _log_root(self, request: dict) -> Path:
+        if self.log_dir is not None:
+            return self.log_dir
+        return _SIM_RUNS / str(request.get("run_id") or "unknown")
+
+    def _append_log(self, request: dict, name: str, record: dict) -> None:
+        path = self._log_root(request) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+
+    def _log_model_call(self, request: dict, attempt: int, error: str | None) -> None:
+        recorded = getattr(self.runtime, "last_completion", None)
+        self._append_log(request, "model_calls.jsonl", {
+            "request_id": request.get("request_id"),
+            "as_of": request.get("as_of"),
+            "attempt": attempt,
+            "status": getattr(recorded, "status", None),
+            "latency_ms": getattr(recorded, "latency_ms", None),
+            "finish_reason": getattr(recorded, "finish_reason", None),
+            "prompt_tokens": getattr(recorded, "prompt_tokens", None),
+            "completion_tokens": getattr(recorded, "completion_tokens", None),
+            "total_tokens": getattr(recorded, "total_tokens", None),
+            "error": error or getattr(recorded, "error", None),
+        })
+
     def _complete(self, prompt: str, request: dict) -> str | dict:
         for attempt in range(self.retries + 1):
             try:
-                return self.runtime.complete(prompt, max_tokens=_MAX_TOKENS)
+                text = self.runtime.complete(prompt, max_tokens=_MAX_TOKENS)
             except Exception as exc:
+                self._log_model_call(request, attempt, type(exc).__name__)
                 if attempt == self.retries:
                     return _hold(request, f"meterless unavailable: {exc}")
                 time.sleep(15 * (attempt + 1))
+                continue
+            self._log_model_call(request, attempt, None)
+            return text
         return _hold(request, "meterless unavailable")
 
     def _query_prompt(self, visible: dict, found: list[QueryResult]) -> str:
@@ -233,12 +271,33 @@ class NemotronTrader:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
         return prompt
 
-    def _ground_reason(self, reason: str, visible: dict, found: list[QueryResult]) -> str:
+    def _ground_reason(self, reason: str, visible: dict, found: list[QueryResult]) -> tuple[str, bool]:
+        """Keep the model's reason. Flag it when it cites a number that was not in the evidence.
+
+        The flag is recorded beside the order repair. It is not added to the action:
+        the simulator rejects any key outside the fixed envelope.
+        """
+        original = (reason or "")[:2000]
         sources = json.dumps(visible) + "\n" + "\n".join(item.text for item in found)
-        if set(_NUMBER.findall(reason)) <= set(_NUMBER.findall(sources)):
-            return reason[:2000]
-        ids = ", ".join(item.query_id for item in found) or "no query"
-        return f"decision follows SQL results ({ids})"[:2000]
+        unsupported = not set(_NUMBER.findall(original)) <= set(_NUMBER.findall(sources))
+        return original, unsupported
+
+    def _apply(self, parsed: dict, request: dict, visible: dict, found: list[QueryResult] | None) -> dict:
+        action, original_orders = _ready(parsed, request, visible)
+        unsupported = None
+        if found is not None:
+            action["reason"], unsupported = self._ground_reason(action.get("reason") or "", visible, found)
+        record = {
+            "request_id": request.get("request_id"),
+            "as_of": request.get("as_of"),
+            "original_orders": original_orders,
+            "repaired_orders": action.get("orders"),
+            "reason": action.get("reason"),
+            "reason_unsupported": unsupported,
+        }
+        self.repairs.append(record)
+        self._append_log(request, "order_repairs.jsonl", record)
+        return action
 
     def decide(self, request: dict, feed: Any = None) -> dict:
         visible = self._visible(request, feed)
@@ -251,9 +310,7 @@ class NemotronTrader:
             parsed = _json_object(text)
             if parsed is None or "orders" not in parsed:
                 return _hold(request, "model reply was not the action JSON")
-            action = _ready(parsed, request, visible)
-            action["reason"] = self._ground_reason(action["reason"], visible, found)
-            return action
+            return self._apply(parsed, request, visible, found)
         if self.source is None or self.recall == "notes":
             text = self._complete(self._prompt(visible), request)
             if isinstance(text, dict):
@@ -261,7 +318,7 @@ class NemotronTrader:
             parsed = _json_object(text)
             if parsed is None:
                 return _hold(request, "model reply was not the action JSON")
-            return _ready(parsed, request, visible)
+            return self._apply(parsed, request, visible, None)
 
         found: list[QueryResult] = []
         for _ in range(_QUERY_LIMIT):
@@ -283,9 +340,7 @@ class NemotronTrader:
                 found.append(result)
                 continue
             if "orders" in parsed:
-                action = _ready(parsed, request, visible)
-                action["reason"] = self._ground_reason(action["reason"], visible, found)
-                return action
+                return self._apply(parsed, request, visible, found)
             break
         text = self._complete(self._query_prompt(visible, found) + "\nReply with the action JSON only.", request)
         if isinstance(text, dict):
@@ -293,6 +348,4 @@ class NemotronTrader:
         parsed = _json_object(text)
         if parsed is None or "orders" not in parsed:
             return _hold(request, "model reply was not the action JSON")
-        action = _ready(parsed, request, visible)
-        action["reason"] = self._ground_reason(action["reason"], visible, found)
-        return action
+        return self._apply(parsed, request, visible, found)

@@ -9,8 +9,9 @@ of months.
 
 Each calendar month is its own run at the same starting cash. With ``--no-forget-notes``,
 the memory arm updates the notebook after each month so month M only sees notes from
-months before M. Historical prices and filings go through the analysis adapter
-(``ANALYSIS_BACKEND=sqlite`` or ``zetaris``). Buy-and-hold is the benchmark. Results
+months before M. Historical prices and filings go through the analysis adapter. The default is the
+Zetaris JDBC lake; ``ANALYSIS_BACKEND=sqlite`` is the without-Zetaris comparison.
+Buy-and-hold is the benchmark. Results
 append to ``results.jsonl``; a rerun skips months already recorded.
 """
 from __future__ import annotations

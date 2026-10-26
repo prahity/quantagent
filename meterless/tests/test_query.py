@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from meterless.action import fit_orders, structure_action
-from meterless.query import QueryRequest, SqliteSource, ZetarisSource, open_analysis_source
+from meterless.query import JdbcZetarisSource, QueryRequest, SqliteSource, ZetarisSource, open_analysis_source
 from meterless.recall import fetch_brief
 from meterless.trader import NemotronTrader
 
@@ -92,13 +92,20 @@ def test_trader_binds_the_simulator_cutoff_and_drops_an_invented_figure(tmp_path
         "run_id": "run", "request_id": "decision_00000", "mode": "V1", "as_of": "2024-01-03T14:30:00Z",
         "window_start": "2024-01-03T14:30:00Z", "window_end": "2024-01-04T14:30:00Z",
     }
-    trader = NemotronTrader(Runtime(), source=source)
+    trader = NemotronTrader(Runtime(), source=source, log_dir=tmp_path)
     action = trader.decide(request)
     assert action["orders"] == []
-    assert "31.3" not in action["reason"]
-    assert action["reason"].startswith("decision follows SQL results")
+    # The original reason stays in the envelope. The unsupported-number flag is logged beside it.
+    assert "31.3" in action["reason"]
+    assert trader.repairs[-1]["reason_unsupported"] is True
+    assert trader.repairs[-1]["reason"] == action["reason"]
     assert trader.queries[0].as_of == "2024-01-03T14:30:00Z"
     assert trader.queries[0].rows[0]["close"] == 185.64
+    logged = json.loads((tmp_path / "order_repairs.jsonl").read_text().splitlines()[-1])
+    assert logged["reason_unsupported"] is True
+    calls = [json.loads(line) for line in (tmp_path / "model_calls.jsonl").read_text().splitlines()]
+    assert len(calls) == 2
+    assert calls[0]["request_id"] == "decision_00000"
 
 
 def test_structure_action_keeps_orders_and_fills_ids_from_the_request():
@@ -162,6 +169,28 @@ def test_brief_states_the_change_and_hides_a_later_close(tmp_path):
     assert "999" not in text
     assert "5 sessions earlier 2024-01-04 104.00 (+15.38%)" in text
     assert "7 sessions earlier 2024-01-02 100.00 (+20.00%)" in text
+
+
+def test_jdbc_cte_maps_the_lake_and_binds_the_cutoff():
+    from datetime import datetime, timezone
+
+    source = JdbcZetarisSource(connect=False)
+    sent = source.prepare("SELECT symbol, close FROM bars WHERE interval = 'daily'", "2024-01-03T14:30:00+00:00")
+    cutoff = int(datetime(2024, 1, 3, 14, 30, tzinfo=timezone.utc).timestamp())
+    assert "FROM aitrader_lake.feed.feed_prices_daily" in sent
+    assert "FROM aitrader_lake.feed.feed_prices_hourly" in sent
+    assert "FROM aitrader_lake.feed.feed_news" in sent
+    assert f"_released_epoch <= {cutoff}" in sent
+    assert "FROM bars" in sent
+    assert "SELECT symbol, close FROM bars" in sent
+    with pytest.raises(ValueError, match="bars and filings"):
+        source.prepare("SELECT close FROM feed_prices_daily", "2024-01-03T14:30:00Z")
+
+
+def test_default_backend_is_the_jdbc_lake(monkeypatch):
+    monkeypatch.delenv("ANALYSIS_BACKEND", raising=False)
+    monkeypatch.setattr(JdbcZetarisSource, "from_env", classmethod(lambda cls, expected_version=None: "jdbc-lake"))
+    assert open_analysis_source() == "jdbc-lake"
 
 
 def test_open_rejects_an_unknown_backend(tmp_path):
