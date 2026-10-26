@@ -87,20 +87,20 @@
   },
   "data_end": "2026-07-21",
   "data_start": "2024-01-01",
-  "data_version": "snap-d5b9a15c35433e85",
-  "fetched_at": "2026-10-25T06:18:56.421030+00:00",
+  "data_version": "snap-0d1d2b3e535833db",
+  "fetched_at": "2026-10-26T06:01:48.079214+00:00",
   "files": {
     "bars_daily.parquet": {
-      "bytes": 233442,
-      "sha256": "0bea2c7688217f6b81ee4cb6d2871b0722fec1a9c4706df349717d816446a190"
+      "bytes": 233459,
+      "sha256": "74cef130c3e84c49b7b4701860b71cd06ea4113100fb2340f951f38c066d5ae4"
     },
     "bars_hourly.parquet": {
       "bytes": 1262004,
       "sha256": "e909d84a7b86d5f0ecf8fe59c950ccce7f41bf62c1770526fe5513183d735dd7"
     },
     "news.parquet": {
-      "bytes": 30502,
-      "sha256": "e40dad22d9ebe9a0aa1a56136a2384d42663da396257bf4801d98056ee66972a"
+      "bytes": 30504,
+      "sha256": "57e7131578fd017723b20e292dfb5ef55c93cab67e511c6460a08b210741d82f"
     }
   },
   "news": {
