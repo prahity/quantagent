@@ -49,6 +49,8 @@ class RunCreate(BaseModel):
     interval: str | None = None
     mode: str | None = None
     initial_cash: float | None = None
+    daily_deposit: float | None = None
+    cash_annual_rate: float | None = None
     start: str
     end: str
     symbols: list[str] | None = None
@@ -60,7 +62,7 @@ class RunCreate(BaseModel):
 
 
 class Autoplay(BaseModel):
-    agent: str = Field(default="hold", description="hold | buy_and_hold | script")
+    agent: str = Field(default="hold", description="hold | cash_only | buy_and_hold | script")
     script: str | None = None
     steps: int = Field(default=1, ge=1, le=10_000)
 
@@ -113,7 +115,7 @@ def config() -> dict:
             "coverage": {interval: svc.store.coverage(interval) for interval in svc.store.intervals},
             "news": svc.store.news_counts(),
         },
-        "agents": ["hold", "buy_and_hold", "script"],
+        "agents": ["hold", "cash_only", "buy_and_hold", "script"],
         "scripts": list_scripts(),
     }
 

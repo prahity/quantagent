@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s10-f581",
+  "parent_id": null,
+  "name": "top3_gap_mom",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.25,
+  "cash_floor": 0.1,
+  "rebalance_every": 3,
+  "min_weight_change": 0.04,
+  "drawdown_cut": 0.1,
+  "origin": "model"
+}

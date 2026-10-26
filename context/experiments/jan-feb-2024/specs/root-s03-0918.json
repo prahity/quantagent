@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s03-0918",
+  "parent_id": null,
+  "name": "rel_strength_spy",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "relative_strength",
+    "lookback": 21,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.2,
+  "cash_floor": 0.2,
+  "rebalance_every": 7,
+  "min_weight_change": 0.02,
+  "drawdown_cut": 0.08,
+  "origin": "model"
+}

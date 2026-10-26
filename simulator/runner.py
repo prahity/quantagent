@@ -128,7 +128,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="run an agent through a fresh simulator run")
-    run.add_argument("--agent", default="hold", choices=["hold", "buy_and_hold", "script", "nemotron"])
+    run.add_argument("--agent", default="hold", choices=["hold", "cash_only", "buy_and_hold", "script", "nemotron"])
     run.add_argument("--script", help="script id under agent/scripts/ or a path to a JSON file")
     run.add_argument("--model", help="nemotron only: pinned model id, e.g. nvidia/nemotron-3-super-120b-a12b")
     run.add_argument("--memory", type=int, default=0, help="nemotron only: earlier decisions from this run kept in the prompt")

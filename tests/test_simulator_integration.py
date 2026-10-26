@@ -62,8 +62,9 @@ class SimulatorIntegrationTest(unittest.TestCase):
 
 
 def _hold(req: dict) -> dict:
-    return {k: req[k] for k in ("schema_version", "run_id", "request_id", "mode", "window_start", "window_end")} | {
-        "orders": [], "reason": "hold"}
+    # Actions stay schema 1.0. Decision requests are 1.1.
+    return {k: req[k] for k in ("run_id", "request_id", "mode", "window_start", "window_end")} | {
+        "schema_version": "1.0", "orders": [], "reason": "hold"}
 
 
 if __name__ == "__main__":

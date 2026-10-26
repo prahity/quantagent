@@ -188,7 +188,9 @@ def test_replay_reproduces_official_result(store, tmp_path):
 
 
 def hold_dict(req: dict) -> dict:
-    return {k: req[k] for k in ("schema_version", "run_id", "request_id", "mode", "window_start", "window_end")} | {"orders": [], "reason": "hold"}
+    # Actions stay schema 1.0. The decision request is 1.1 and must not be copied onto the action.
+    return {k: req[k] for k in ("run_id", "request_id", "mode", "window_start", "window_end")} | {
+        "schema_version": "1.0", "orders": [], "reason": "hold"}
 
 
 def order_dict(req: dict, oid: str, symbol: str, side: str, qty: int, offset_s: int) -> dict:

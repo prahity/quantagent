@@ -6,7 +6,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
-from contracts.decision_request import SCHEMA_VERSION, DecisionRequest
+from contracts.decision_request import DecisionRequest
+
+# Action envelopes stay 1.0. Decision requests moved to 1.1 when deposits and interest were added.
+SCHEMA_VERSION = "1.0"
 
 
 class Order(BaseModel):

@@ -253,13 +253,14 @@ class SqliteSource:
             cls.build(db_path, bars, filings, data_version)
         return cls(db_path, data_version)
 
-    def execute(self, request: QueryRequest) -> QueryResult:
+    def execute(self, request: QueryRequest, row_limit: int | None = None) -> QueryResult:
         started = time.perf_counter()
         try:
             statement = one_select(request.sql)
             cutoff = utc_text(request.as_of)
         except (ValueError, TypeError) as exc:
             return _result(request, self.name, self.data_version, started, error=str(exc))
+        cap = _ROW_LIMIT if row_limit is None else int(row_limit)
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         try:
@@ -277,14 +278,14 @@ class SqliteSource:
             """, (cutoff, cutoff))
             conn.set_authorizer(_authorizer)
             try:
-                cursor = conn.execute(f"SELECT * FROM ({statement}) LIMIT ?", (_ROW_LIMIT + 1,))
+                cursor = conn.execute(f"SELECT * FROM ({statement}) LIMIT ?", (cap + 1,))
                 fetched = cursor.fetchall()
             except sqlite3.Error as exc:
                 return _result(request, self.name, self.data_version, started, error=str(exc))
             finally:
                 conn.set_authorizer(None)
-            truncated = len(fetched) > _ROW_LIMIT
-            kept = fetched[:_ROW_LIMIT]
+            truncated = len(fetched) > cap
+            kept = fetched[:cap]
             columns = [item[0] for item in cursor.description or []]
             rows = [{key: row[key] for key in row.keys()} for row in kept]
             return _result(request, self.name, self.data_version, started, columns=columns, rows=rows, truncated=truncated)
@@ -547,11 +548,12 @@ class JdbcZetarisSource:
                 "Reload with simulator/scripts/publish_zetaris.py --replace."
             )
 
-    def prepare(self, sql: str, as_of: str) -> str:
+    def prepare(self, sql: str, as_of: str, row_limit: int | None = None) -> str:
         """Wrap one agent statement. The cutoff literal is not part of the agent's SQL."""
         statement = one_select(sql)
         if _HIDDEN_SQL.search(statement):
             raise ValueError("query the released relations bars and filings")
+        self._row_limit = _ROW_LIMIT if row_limit is None else int(row_limit)
         cutoff = int(datetime.fromisoformat(utc_text(as_of).replace("Z", "+00:00")).timestamp())
         bars = (
             "bars AS ("
@@ -571,21 +573,22 @@ class JdbcZetarisSource:
             wrapped = f"WITH {bound}, {statement[4:].lstrip()}"
         else:
             wrapped = f"WITH {bound} {statement}"
-        return f"SELECT * FROM ({wrapped}) LIMIT {_ROW_LIMIT + 1}"
+        return f"SELECT * FROM ({wrapped}) LIMIT {self._row_limit + 1}"
 
-    def execute(self, request: QueryRequest) -> QueryResult:
+    def execute(self, request: QueryRequest, row_limit: int | None = None) -> QueryResult:
         started = time.perf_counter()
         try:
-            statement = self.prepare(request.sql, request.as_of)
+            statement = self.prepare(request.sql, request.as_of, row_limit)
         except (ValueError, TypeError) as exc:
             return _result(request, self.name, self.data_version, started, error=str(exc))
         try:
             columns, fetched = self._fetch(statement)
         except Exception as exc:
             return _result(request, self.name, self.data_version, started, error=str(exc).splitlines()[0][-300:])
-        truncated = len(fetched) > _ROW_LIMIT
+        cap = _ROW_LIMIT if row_limit is None else int(row_limit)
+        truncated = len(fetched) > cap
         rows = []
-        for raw in fetched[:_ROW_LIMIT]:
+        for raw in fetched[:cap]:
             rows.append({columns[i]: _match_sqlite_cell(columns[i], raw[i]) for i in range(len(columns))})
         return _result(request, self.name, self.data_version, started, columns=columns, rows=rows, truncated=truncated)
 

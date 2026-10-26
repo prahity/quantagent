@@ -156,3 +156,18 @@ class SimulatorService:
         (run_dir / "fills.jsonl").write_text("".join(json.dumps(_dump(f)) + "\n" for f in engine.ledger.fills))
         (run_dir / "rejections.jsonl").write_text("".join(json.dumps(_dump(r)) + "\n" for r in engine.ledger.rejections))
         (run_dir / "equity.jsonl").write_text("".join(json.dumps(_dump(p)) + "\n" for p in engine.equity_curve()))
+        (run_dir / "cash_events.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "kind": event.kind,
+                        "at": event.at.isoformat(),
+                        "trading_day": event.trading_day,
+                        "amount": event.amount,
+                        "cash_after": event.cash_after,
+                    }
+                )
+                + "\n"
+                for event in engine.ledger.cash_events
+            )
+        )

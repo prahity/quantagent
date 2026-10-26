@@ -27,26 +27,34 @@ Use only the symbols, prices, and filings given here. Do not assume anything aft
 Request:
 """
 
+_ECONOMICS = (
+    "You are the trading agent in a market simulator. Your goal is to maximize profit. "
+    "Profit is final equity minus starting cash minus deposits. "
+    "You can buy stocks or keep cash. Cash you leave uninvested earns account.cash_annual_rate, "
+    "credited once each trading day as cash times that rate divided by 252. You cannot create cash. "
+    "account.deposit_today is new cash the simulator added at the start of this trading day and it is already inside account.cash. "
+    "It is non-zero only on the first decision of that day. account.total_deposits excludes starting cash. "
+    "account.interest_earned is interest already credited. "
+)
+
 _PROMPT_STYLES = {
     "default": (
-        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
-        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
-        "If you hold no shares and recent closes are higher than earlier ones, buy.\n"
+        _ECONOMICS
+        + "If you hold no shares and recent closes are higher than earlier ones, you may buy. Keeping cash to earn interest is allowed.\n"
         + _REPLY
     ),
     "deploy": (
-        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
-        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
-        "Idle cash is the main way this run loses to buy-and-hold. If cash is more than about 20% of equity and any "
+        _ECONOMICS
+        + "Idle cash earns only the cash rate, which lags buy-and-hold when stocks are rising. If cash is more than about 20% of equity and any "
         "symbol's recent closes are rising, buy enough shares to put most of that cash to work. Split across rising "
         "symbols when more than one is rising. Do not wait for a perfect signal.\n"
         + _REPLY
     ),
     "equal": (
-        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
-        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
-        "When you are fully in cash, or nearly so, buy roughly equal dollar amounts of every tradeable symbol that "
-        "has a recent close, using nearly all of the cash. After that, hold unless a clear drop forces a sell.\n"
+        _ECONOMICS
+        + "When you are fully in cash, or nearly so, buy roughly equal dollar amounts of every tradeable symbol that "
+        "has a recent close, using nearly all of the cash. After that, hold unless a clear drop forces a sell. "
+        "You may instead keep cash if earning interest is the better way to maximize profit.\n"
         + _REPLY
     ),
 }

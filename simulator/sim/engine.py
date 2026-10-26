@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 import pandas as pd
@@ -28,6 +28,9 @@ class RunConfig(BaseModel):
     interval: Literal["hourly", "daily"] = "hourly"
     mode: Literal["V1", "V2"] = "V1"
     initial_cash: float = Field(default=10_000, gt=0)
+    # Omitted configs stay at 0 so earlier runs reproduce. A funded trial sets 200 and 0.05.
+    daily_deposit: float = Field(default=0, ge=0, description="Cash credited once at the start of each trading day, before the decision.")
+    cash_annual_rate: float = Field(default=0, description="Fixed annual rate on cash. Daily credit is cash * rate / 252. Never taken from prices.")
     currency: str = "USD"
     start: str = Field(description="inclusive date, YYYY-MM-DD")
     end: str = Field(description="inclusive date, YYYY-MM-DD")
@@ -46,6 +49,8 @@ class RunConfig(BaseModel):
             "interval": env.get("interval", "hourly"),
             "mode": env.get("mode", "V1"),
             "initial_cash": env.get("initial_cash", 10_000),
+            "daily_deposit": env.get("daily_deposit", 0),
+            "cash_annual_rate": env.get("cash_annual_rate", 0),
             "currency": env.get("currency", "USD"),
             "time_scale": (env.get("clock") or {}).get("time_scale", 60),
             "execution": env.get("execution") or {},
@@ -114,6 +119,16 @@ class Engine:
         self.held_requests = 0
         self.last_released: list[str] = []
         self._report: Report | None = None
+        self.deposit_today = 0.0
+        self.daily_cash: list[dict] = []
+        self._opened_days: set[date] = set()
+        self._closed_days: set[date] = set()
+        self._segment_day: date | None = None
+        self._segment_deposit = 0.0
+        self._segment_decision_cash = 0.0
+        self._segment_start_equity: float | None = None
+        self._twr_factors: list[float] = []
+        self._deposits_at_point: list[float] = []
 
     # ------------------------------------------------------------------ lifecycle
     def reset(self) -> DecisionRequest:
@@ -122,7 +137,8 @@ class Engine:
         t0 = self.market.boundary(0)
         self.last_released = self.news.release_through(t0)
         self.feed.set_clock(t0)
-        self.equity_points.append((t0.to_pydatetime(), self.ledger.cash, self.ledger.cash))
+        self._open_day(t0)
+        self._record_equity(t0, self.ledger.cash, self.ledger.cash)
         self.current_request = self._build_request()
         return self.current_request
 
@@ -162,18 +178,88 @@ class Engine:
         if self.step + 1 >= self.market.steps:
             return ack, None, self._finish()
 
+        current_day = self._trading_day(self.market.boundary(self.step))
         self.step += 1
         t = self.market.boundary(self.step)
+        next_day = self._trading_day(t)
+        if next_day != current_day:
+            # Yesterday's interest uses cash after that day's fills and before today's deposit.
+            self._close_day(t, final=False)
         self._process_due(t)
         self._expire(t)
         self.last_released = self.news.release_through(t)
         self.feed.set_clock(t)
+        if next_day != current_day:
+            self._open_day(t)
+        else:
+            self.deposit_today = 0.0
         marks = self._marks(t)
-        self.equity_points.append((t.to_pydatetime(), self.ledger.cash, self.ledger.equity(marks)))
+        self._record_equity(t, self.ledger.cash, self.ledger.equity(marks))
         self.current_request = self._build_request()
         return ack, self.current_request, None
 
     # ------------------------------------------------------------------ internals
+    @staticmethod
+    def _trading_day(ts) -> date:
+        """UTC date of a bar start. US session opens share one UTC date per trading day."""
+        t = pd.Timestamp(ts)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        else:
+            t = t.tz_convert("UTC")
+        return t.date()
+
+    def _record_equity(self, ts, cash: float, equity: float) -> None:
+        when = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        self.equity_points.append((when, cash, equity))
+        self._deposits_at_point.append(self.ledger.total_deposits)
+
+    def _open_day(self, t: pd.Timestamp) -> None:
+        """Credit today's deposit once, before the decision, and start the return segment."""
+        day = self._trading_day(t)
+        if day in self._opened_days:
+            return
+        self._opened_days.add(day)
+        amount = float(self.config.daily_deposit or 0)
+        self.deposit_today = 0.0
+        if amount > 0:
+            self.ledger.credit("deposit", amount, t, day.isoformat())
+            self.deposit_today = amount
+        self._segment_day = day
+        self._segment_deposit = self.deposit_today
+        self._segment_decision_cash = self.ledger.cash
+        self._segment_start_equity = self.ledger.equity(self._marks(t))
+
+    def _close_day(self, mark_time: pd.Timestamp, final: bool) -> None:
+        """Credit one day of cash interest after that day's fills and before the next deposit."""
+        day = self._segment_day
+        if day is None or day in self._closed_days:
+            return
+        uninvested = self.ledger.cash
+        rate = float(self.config.cash_annual_rate or 0)
+        interest = 0.0
+        if rate:
+            interest = uninvested * rate / 252.0
+            self.ledger.credit("interest", interest, self.market.boundary(self.step), day.isoformat())
+        if final:
+            marks = {s: v for s in self.symbols if (v := self.market.last_bar_close_in_run(s)) is not None}
+        else:
+            marks = self._marks(mark_time)
+        end_equity = self.ledger.equity(marks)
+        start = self._segment_start_equity or 0.0
+        if start > 0:
+            self._twr_factors.append(end_equity / start)
+        self.daily_cash.append(
+            {
+                "trading_day": day.isoformat(),
+                "cash_at_decision": self._segment_decision_cash,
+                "cash_uninvested": uninvested,
+                "deposit": self._segment_deposit,
+                "interest": interest,
+            }
+        )
+        self._closed_days.add(day)
+
     def _marks(self, t: pd.Timestamp) -> dict[str, float]:
         marks = {}
         for symbol in self.symbols:
@@ -231,7 +317,16 @@ class Engine:
             window_start=t.to_pydatetime(),
             window_end=self.market.window_end(self.step).to_pydatetime(),
             initial_cash=self.config.initial_cash,
-            account=Account(currency=self.config.currency, cash=self.ledger.cash, equity=self.ledger.equity(marks), positions=positions),
+            account=Account(
+                currency=self.config.currency,
+                cash=self.ledger.cash,
+                equity=self.ledger.equity(marks),
+                positions=positions,
+                deposit_today=self.deposit_today,
+                total_deposits=self.ledger.total_deposits,
+                interest_earned=self.ledger.interest_earned,
+                cash_annual_rate=float(self.config.cash_annual_rate),
+            ),
             clock=Clock(
                 decision_interval_seconds=NOMINAL_SECONDS[self.config.interval],
                 time_scale=self.config.time_scale,
@@ -261,16 +356,30 @@ class Engine:
         for pending in self.scheduler.drain():
             rejection = self.ledger.reject(pending.order, pending.request_id, t_end, "run_ended")
             self._update_outcome(pending, rejection)
+        self._close_day(t_end, final=True)
         marks = {s: v for s in self.symbols if (v := self.market.last_bar_close_in_run(s)) is not None}
         self._final_marks = marks
         final_equity = self.ledger.equity(marks)
-        self.equity_points.append((t_end.to_pydatetime(), self.ledger.cash, final_equity))
+        self._record_equity(t_end, self.ledger.cash, final_equity)
         self.status = "finished"
         self.current_request = None
         self.feed.set_clock(t_end)
 
         equity = [e for _, _, e in self.equity_points]
+        # A deposit raises equity without being a gain. Subtract deposits already credited at each point.
+        if self.ledger.total_deposits == 0:
+            drawdown_series = equity
+        else:
+            drawdown_series = [value - deposited for value, deposited in zip(equity, self._deposits_at_point)]
         totals = trade_totals(self.ledger.fills)
+        simple_return = (final_equity / self.config.initial_cash - 1) * 100
+        if self.ledger.total_deposits == 0:
+            twr = simple_return
+        else:
+            factor = 1.0
+            for piece in self._twr_factors:
+                factor *= piece
+            twr = (factor - 1.0) * 100.0
         self._report = Report(
             run_id=self.config.run_id,
             label=self.config.label,
@@ -285,9 +394,15 @@ class Engine:
             initial_cash=self.config.initial_cash,
             final_cash=self.ledger.cash,
             final_equity=final_equity,
-            net_profit=final_equity - self.config.initial_cash,
-            return_pct=(final_equity / self.config.initial_cash - 1) * 100,
-            max_drawdown_pct=max_drawdown_pct(equity),
+            net_profit=final_equity - self.config.initial_cash - self.ledger.total_deposits,
+            return_pct=simple_return,
+            max_drawdown_pct=max_drawdown_pct(drawdown_series),
+            total_deposits=self.ledger.total_deposits,
+            interest_earned=self.ledger.interest_earned,
+            time_weighted_return_pct=twr,
+            daily_deposit=float(self.config.daily_deposit),
+            cash_annual_rate=float(self.config.cash_annual_rate),
+            daily_cash=self.daily_cash,
             sharpe=sharpe(equity, self.sharpe_ppy),
             sharpe_periods_per_year=self.sharpe_ppy,
             turnover=totals["traded_notional"] / self.config.initial_cash,

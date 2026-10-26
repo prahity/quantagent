@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s08-213e",
+  "parent_id": null,
+  "name": "cash_heavy_cycle",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.1,
+  "cash_floor": 0.4,
+  "rebalance_every": 2,
+  "min_weight_change": 0.01,
+  "drawdown_cut": 0.05,
+  "origin": "model"
+}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pandas as pd
 
@@ -13,6 +14,17 @@ from contracts.report import Fill, Rejection
 class PositionState:
     quantity: int = 0
     avg_cost: float = 0.0
+
+
+@dataclass
+class CashEvent:
+    """A simulator-owned cash credit. The agent cannot create either kind."""
+
+    kind: str  # "deposit" or "interest"
+    at: datetime
+    trading_day: str
+    amount: float
+    cash_after: float
 
 
 @dataclass
@@ -43,9 +55,31 @@ class Ledger:
     positions: dict[str, PositionState] = field(default_factory=dict)
     fills: list[Fill] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
+    total_deposits: float = 0.0
+    interest_earned: float = 0.0
+    cash_events: list[CashEvent] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.cash = float(self.initial_cash)
+
+    def credit(self, kind: str, amount: float, at: pd.Timestamp, trading_day: str) -> CashEvent:
+        """Add cash the simulator owns. ``kind`` is ``deposit`` or ``interest``."""
+        if kind not in ("deposit", "interest"):
+            raise ValueError(f"unknown cash credit {kind!r}")
+        self.cash += float(amount)
+        if kind == "deposit":
+            self.total_deposits += float(amount)
+        else:
+            self.interest_earned += float(amount)
+        event = CashEvent(
+            kind=kind,
+            at=at.to_pydatetime(),
+            trading_day=trading_day,
+            amount=float(amount),
+            cash_after=self.cash,
+        )
+        self.cash_events.append(event)
+        return event
 
     def held_symbols(self) -> list[str]:
         return [s for s, p in self.positions.items() if p.quantity != 0]

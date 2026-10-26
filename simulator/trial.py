@@ -11,8 +11,10 @@ Each calendar month is its own run at the same starting cash. With ``--no-forget
 the memory arm updates the notebook after each month so month M only sees notes from
 months before M. Historical prices and filings go through the analysis adapter. The default is the
 Zetaris JDBC lake; ``ANALYSIS_BACKEND=sqlite`` is the without-Zetaris comparison.
-Buy-and-hold is the benchmark. Results
-append to ``results.jsonl``; a rerun skips months already recorded.
+Buy-and-hold and cash-only are the benchmarks, under the same deposits and cash rate.
+Results append to ``results.jsonl``; a rerun skips months already recorded.
+``--daily-deposit`` and ``--cash-annual-rate`` default to 0 so a rerun of an older
+window still matches. A funded trial passes 200 and 0.05.
 """
 from __future__ import annotations
 
@@ -29,8 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 DEFAULT_SEED = REPO / "meterless" / "seeds" / "spread.md"
-sys.path.insert(0, str(ROOT))
+# Simulator must win `agent` and `runner`; the repo still supplies `meterless`.
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(ROOT))
 
 from agent.scripted import load_agent  # noqa: E402
 from runner import LocalFeedReader, run_agent  # noqa: E402
@@ -42,7 +45,10 @@ from meterless.query import open_analysis_source  # noqa: E402
 from meterless.trader import NemotronTrader  # noqa: E402
 
 DATA_END = date(2026, 7, 21)
-METRICS = ["run_id", "return_pct", "net_profit", "max_drawdown_pct", "sharpe", "fills", "rejections", "invalid_responses", "turnover"]
+METRICS = [
+    "run_id", "return_pct", "time_weighted_return_pct", "net_profit", "total_deposits", "interest_earned",
+    "max_drawdown_pct", "sharpe", "fills", "rejections", "invalid_responses", "turnover",
+]
 _write_lock = threading.Lock()
 
 
@@ -140,7 +146,17 @@ def runtime_errors(report: dict) -> int:
 def record(out: Path, row: dict) -> None:
     with _write_lock, (out / "results.jsonl").open("a") as fh:
         fh.write(json.dumps(row) + "\n")
-    print(f"{row['arm']:7} {row['month']}  agent {row['return_pct']:+6.2f}%  b&h {row['bench_return_pct']:+6.2f}%  fills {row['fills']}", flush=True)
+    print(
+        f"{row['arm']:14} {row['month']}  net {row['net_profit']:+8.2f}  "
+        f"twr {row['time_weighted_return_pct']:+6.2f}%  "
+        f"interest {row['interest_earned']:.2f}  "
+        f"dd {row['max_drawdown_pct']:.2f}%  fills {row['fills']}",
+        flush=True,
+    )
+    days = row.get("daily_cash") or []
+    if days and (row.get("total_deposits") or row.get("interest_earned")):
+        left = ", ".join(f"{d['trading_day']}:{d['cash_uninvested']:.2f}" for d in days)
+        print(f"         cash left uninvested: {left}", flush=True)
 
 
 def main() -> None:
@@ -153,6 +169,8 @@ def main() -> None:
     parser.add_argument("--start", default="2024-01-02", help="first calendar day when --days is set")
     parser.add_argument("--symbols", default="AAPL,MSFT,SPY")
     parser.add_argument("--cash", type=float, default=10000.0)
+    parser.add_argument("--daily-deposit", type=float, default=0.0, help="credited at each trading-day open. 0 reproduces older runs")
+    parser.add_argument("--cash-annual-rate", type=float, default=0.0, help="fixed cash rate. Daily interest is cash * rate / 252. 0 reproduces older runs")
     parser.add_argument("--in-run-memory", type=int, default=5)
     parser.add_argument("--workers", type=int, default=6, help="parallel months for the nomem arm")
     parser.add_argument("--arms", default="memory,nomem")
@@ -187,20 +205,36 @@ def main() -> None:
 
     def config(month: str, start: str, end: str, arm: str) -> dict:
         return {"interval": "daily", "mode": "V1", "start": start, "end": end, "initial_cash": args.cash,
+                "daily_deposit": args.daily_deposit, "cash_annual_rate": args.cash_annual_rate,
                 "symbols": args.symbols.split(","), "label": f"trial-{arm}-{month}",
                 "execution": {"max_position_pct_equity": 0}}
 
     bench_cache: dict[str, dict] = {}
 
     def bench(month: str, start: str, end: str) -> dict:
+        fresh = None
         with _write_lock:
             if month not in bench_cache:
                 bench_cache[month], _ = simulate(load_agent("buy_and_hold", None), config(month, start, end, "bench"))
-            return bench_cache[month]
+                cash_report, _ = simulate(load_agent("cash_only", None), config(month, start, end, "cash"))
+                fresh = (cash_report, bench_cache[month])
+        if fresh is not None:
+            cash_report, buy_hold = fresh
+            if ("buy_and_hold", month) not in done:
+                record(out, row("buy_and_hold", month, buy_hold, buy_hold))
+            if ("cash", month) not in done:
+                record(out, row("cash", month, cash_report, buy_hold))
+        return bench_cache[month]
 
     def row(arm: str, month: str, report: dict, b: dict, **extra) -> dict:
+        twr = report["time_weighted_return_pct"]
+        bench_twr = b["time_weighted_return_pct"]
         return {"arm": arm, "month": month, "model": args.model, "thinking": args.thinking, **{k: report[k] for k in METRICS},
-                "bench_return_pct": b["return_pct"], "excess_pct": report["return_pct"] - b["return_pct"],
+                "bench_return_pct": b["return_pct"], "bench_twr_pct": bench_twr,
+                "excess_pct": twr - bench_twr,
+                "daily_cash": report.get("daily_cash") or [],
+                "daily_deposit": report.get("daily_deposit", 0),
+                "cash_annual_rate": report.get("cash_annual_rate", 0),
                 "runtime_errors": runtime_errors(report), **extra}
 
     def nomem_month(spec) -> None:
@@ -256,7 +290,13 @@ def main() -> None:
             ))
             notes = revised
 
-    print(f"recall {args.recall}  prompt {args.prompt_style}  in-run-memory {args.in_run_memory}", flush=True)
+    print(
+        f"recall {args.recall}  prompt {args.prompt_style}  in-run-memory {args.in_run_memory}  "
+        f"deposit {args.daily_deposit:g}  cash rate {args.cash_annual_rate:g}",
+        flush=True,
+    )
+    for month, start, end in periods:
+        bench(month, start, end)
     arms = args.arms.split(",")
     analysis = open_analysis_source(snapshot_dir=ROOT / "sim" / "snapshot") if "memory" in arms and args.recall != "notes" else None
     threads = []
@@ -274,16 +314,16 @@ def main() -> None:
 
 def summarize(out: Path) -> None:
     rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
-    for arm in ("memory", "nomem"):
+    for arm in ("memory", "nomem", "buy_and_hold", "cash"):
         rs = sorted((r for r in rows if r["arm"] == arm), key=lambda r: r["month"])
         if not rs:
             continue
         compound = 1.0
         for r in rs:
-            compound *= 1 + r["return_pct"] / 100
+            compound *= 1 + r.get("time_weighted_return_pct", r["return_pct"]) / 100
         half = len(rs) // 2
         mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")  # noqa: E731
-        print(f"{arm:7} months {len(rs):2}  mean {mean([r['return_pct'] for r in rs]):+.2f}%  "
+        print(f"{arm:14} months {len(rs):2}  mean {mean([r['return_pct'] for r in rs]):+.2f}%  "
               f"mean excess vs b&h {mean([r['excess_pct'] for r in rs]):+.2f}%  "
               f"first-half excess {mean([r['excess_pct'] for r in rs[:half]]):+.2f}%  "
               f"second-half excess {mean([r['excess_pct'] for r in rs[half:]]):+.2f}%  "

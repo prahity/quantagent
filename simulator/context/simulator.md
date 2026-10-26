@@ -98,11 +98,15 @@ Worked example from the design, to encode as a test:
 - An article at `14:02` stays private until its own release time.
 - In V2, an order scheduled at `14:00:45` still follows the plan accepted at `14:00:00`. The `14:00:40` article does not create another decision.
 
-## JSON contract (`schema_version` `1.0`)
+## JSON contract
 
-Decision request fields: `schema_version`, `run_id`, `request_id`, `mode`, `as_of`, `window_start`, `window_end`, `initial_cash`, `account` (`currency`, `cash`, `equity`, `positions`), `clock` (`cadence_clock`, `decision_interval_seconds`, `time_scale`, `execution_resolution_ms`), `data` (`feed_schema`, `workspace_schema`, `news_event_ids`).
+Decision requests are `schema_version` `1.1`. Action responses and acknowledgements stay `1.0`.
 
-Action response fields: `schema_version`, `run_id`, `request_id`, `mode`, `window_start`, `window_end`, `orders`, `reason`.
+Decision request fields: `schema_version`, `run_id`, `request_id`, `mode`, `as_of`, `window_start`, `window_end`, `initial_cash`, `account`, `clock` (`cadence_clock`, `decision_interval_seconds`, `time_scale`, `execution_resolution_ms`), `data` (`feed_schema`, `workspace_schema`, `news_event_ids`).
+
+`account` fields: `currency`, `cash`, `equity`, `positions`, `deposit_today`, `total_deposits`, `interest_earned`, `cash_annual_rate`. The simulator credits `deposit_today` at the start of each trading day before the decision, and credits cash interest (`cash * cash_annual_rate / 252`) at day close. The agent cannot create cash. `total_deposits` does not include initial cash.
+
+Action response fields: `schema_version` (`1.0`), `run_id`, `request_id`, `mode`, `window_start`, `window_end`, `orders`, `reason`.
 
 Each order: `order_id`, `execute_at`, `symbol`, `side` (`BUY` or `SELL`), `quantity`, `order_type` (`MARKET` for the first slice; `limit_price` is null on market orders), `limit_price`.
 

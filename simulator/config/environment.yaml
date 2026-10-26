@@ -10,6 +10,14 @@ environment_version: "sim-0.1.0"
 initial_cash: 10000
 currency: USD
 
+# External cash the simulator adds. The agent cannot create either one.
+# Leave both at 0 so a config that omits them reproduces earlier runs.
+# A funded trial sets daily_deposit: 200 and cash_annual_rate: 0.05.
+# Interest is cash * cash_annual_rate / 252 once per trading day, at day close.
+# The rate is this fixed number. It is never read from prices or from later data.
+daily_deposit: 0
+cash_annual_rate: 0
+
 # "hourly" or "daily". Both are real Yahoo Finance bars in the frozen snapshot.
 # One decision request is issued at the start of every bar.
 interval: hourly

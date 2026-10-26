@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 class Position(BaseModel):
@@ -25,6 +25,10 @@ class Account(BaseModel):
     cash: float
     equity: float
     positions: list[Position] = Field(default_factory=list)
+    deposit_today: float = Field(default=0, description="Cash credited at the start of this trading day. Non-zero only on the first decision of that day, and already included in cash.")
+    total_deposits: float = Field(default=0, description="Sum of daily deposits so far. Does not include initial cash.")
+    interest_earned: float = Field(default=0, description="Cash interest credited so far.")
+    cash_annual_rate: float = Field(default=0, description="Fixed annual rate on uninvested cash. Each trading day credits cash * rate / 252.")
 
 
 class Clock(BaseModel):
@@ -64,7 +68,7 @@ class DecisionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCHEMA_VERSION
     run_id: str
     request_id: str
     mode: Literal["V1", "V2"]

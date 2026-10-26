@@ -1,7 +1,10 @@
 """Build and validate the fixed JSON action envelope on the agent side.
 
-This mirrors the simulator's contract (schema_version 1.0) so the agent can validate its
-own response before submitting and fall back to hold on any failure. It deliberately does
+This mirrors the simulator's action contract (schema_version 1.0) so the agent can validate its
+own envelope before submitting it. Decision requests are schema 1.1 and may carry
+deposit_today, total_deposits, interest_earned, and cash_annual_rate on the account.
+The action envelope stays 1.0. The agent cannot create cash.
+Validate locally and fall back to hold on any failure. It deliberately does
 NOT import the simulator: the simulator remains the authoritative validator at submit time;
 this is a local guard. Keep the rules here in sync with simulator/contracts/action.py.
 """

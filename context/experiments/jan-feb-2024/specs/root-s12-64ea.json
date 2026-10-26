@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s12-64ea",
+  "parent_id": null,
+  "name": "mom-5-top1",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.4,
+  "cash_floor": 0.2,
+  "rebalance_every": 1,
+  "min_weight_change": 0.02,
+  "drawdown_cut": 0.08,
+  "origin": "fallback"
+}

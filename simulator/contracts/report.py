@@ -64,9 +64,9 @@ class Report(BaseModel):
     initial_cash: float
     final_cash: float
     final_equity: float
-    net_profit: float
-    return_pct: float
-    max_drawdown_pct: float
+    net_profit: float = Field(description="final_equity - initial_cash - total_deposits. Interest stays inside equity.")
+    return_pct: float = Field(description="Simple final_equity / initial_cash - 1, in percent. Not deposit-adjusted.")
+    max_drawdown_pct: float = Field(description="Drawdown of equity minus deposits credited so far. Equals raw-equity drawdown when there are no deposits.")
     sharpe: float | None
     sharpe_periods_per_year: int
     turnover: float = Field(description="Sum of traded notional divided by initial_cash")
@@ -80,3 +80,9 @@ class Report(BaseModel):
     final_positions: list[dict]
     valuation_convention: str
     costs: dict
+    total_deposits: float = 0
+    interest_earned: float = 0
+    time_weighted_return_pct: float = Field(default=0, description="Return that strips deposits. Equals return_pct when total_deposits is 0.")
+    daily_deposit: float = 0
+    cash_annual_rate: float = 0
+    daily_cash: list[dict] = Field(default_factory=list, description="One row per trading day: deposit, interest, and cash left uninvested.")
