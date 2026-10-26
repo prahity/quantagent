@@ -39,8 +39,23 @@ class ModelConfig:
 
     temperature: float = 0.0
     top_p: float = 1.0
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     timeout_s: float = 60.0
+
+    # Reasoning control. "off" is pinned by default because this hosted model otherwise
+    # spends its whole token budget in a separate reasoning channel and returns empty
+    # content (measured). Overridable per run via the THINKING env var (off|low|on):
+    #   off -> chat_template_kwargs {"enable_thinking": false}  (the only mechanism the
+    #          hosted endpoint actually honors; /no_think and "detailed thinking off" do not)
+    #   low -> reasoning_effort "low"   (reduces but does not remove reasoning)
+    #   on  -> no directive (full reasoning)
+    thinking: str = "off"
+    thinking_env: str = "THINKING"
+
+    # The hosted endpoint rejects nvext.guided_json (HTTP 400: unknown field), so structured
+    # output is enforced by prompt + Pydantic validation instead. Flip to True only on an
+    # endpoint that accepts it; the schema is then sent as {"nvext": {"guided_json": ...}}.
+    use_guided_json: bool = False
 
     # Retry policy for 429 / 5xx.
     max_retries: int = 4

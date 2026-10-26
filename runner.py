@@ -202,6 +202,8 @@ def run(
         report = result["report"]
 
         available_at = next_request["as_of"] if next_request else request["window_end"]
+        # LLM agents expose per-decision wall time / token totals; baselines don't.
+        decision_stats = getattr(agent, "last_decision_stats", None) or {}
         memory.append({
             "kind": "decision",
             "request_id": request_id,
@@ -211,6 +213,7 @@ def run(
             "reason": payload.get("reason") if isinstance(payload, dict) else None,
             "order_outcomes": ack.get("orders", []),
             "queries_used": query_tool.calls_used,
+            **decision_stats,
         })
 
         if verbose:
@@ -225,6 +228,8 @@ def run(
 
     backend.close()
     summary = _summarize(service, run_id, report, step, query_log, data_label, agent_name)
+    model = getattr(agent, "model", None)
+    summary["model"] = model.settings() if hasattr(model, "settings") else None
     (run_dir / "run_summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     return summary
 
@@ -293,7 +298,7 @@ def main() -> None:
     summary = run(args.agent, args.minutes, run_config, data=args.data, backend_kind=args.backend, verbose=not args.quiet)
     show = {k: summary[k] for k in (
         "run_id", "agent", "data", "result_kind", "steps_done", "steps_total",
-        "initial_cash", "final_equity", "net_profit", "fills", "rejections", "queries",
+        "initial_cash", "final_equity", "net_profit", "fills", "rejections", "queries", "model",
     )}
     print(json.dumps(show, indent=2, default=str))
 

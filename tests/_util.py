@@ -53,8 +53,20 @@ class FakeModel:
         self._responses = list(responses)
         self.calls: list[list[dict]] = []
 
-    def chat(self, messages, response_json: bool = False) -> str:
-        self.calls.append(messages)
+    def chat(self, messages, response_json: bool = False, guided_json=None) -> str:
+        self.calls.append([dict(m) for m in messages])
         if not self._responses:
             return '{"type":"decision","orders":[],"reason":"no script left"}'
         return self._responses.pop(0)
+
+    def chat_full(self, messages, response_json: bool = False, guided_json=None):
+        from agent.model import ModelResult
+
+        content = self.chat(messages, response_json=response_json, guided_json=guided_json)
+        # Empty content stands in for a max_tokens cut-off so tests exercise the retry path.
+        finish_reason = "length" if content == "" else "stop"
+        return ModelResult(
+            content=content, raw_content=content, finish_reason=finish_reason,
+            status=200, retries=0, latency_ms=0.0,
+            prompt_tokens=None, completion_tokens=None, total_tokens=None, reasoning=None,
+        )
