@@ -41,6 +41,10 @@ class ModelConfig:
     top_p: float = 1.0
     max_tokens: int = 4096
     timeout_s: float = 60.0
+    # Nemotron 3.x reasons before answering; with thinking on, max_tokens is consumed by
+    # reasoning and content comes back empty. None = don't send the flag (for endpoints
+    # that reject chat_template_kwargs).
+    enable_thinking: bool | None = False
 
     # Reasoning control. "off" is pinned by default because this hosted model otherwise
     # spends its whole token budget in a separate reasoning channel and returns empty

@@ -70,6 +70,15 @@ class ModelResult:
     def reasoning_len(self) -> int:
         return len(self.reasoning or "")
 
+    @property
+    def truncated(self) -> bool:
+        """True when the reply was cut off or came back empty.
+
+        That is a normal result, not a transport failure: the policy sends one
+        correction instead of the caller raising.
+        """
+        return self.finish_reason == "length" or not (self.content or "").strip()
+
 
 class NemotronModel:
     """Thin chat client. `chat(messages) -> str` returns the (think-stripped) content."""
@@ -80,7 +89,14 @@ class NemotronModel:
         self._api_key = os.environ.get(self.config.api_key_env) or ""
         self.model_id = os.environ.get(self.config.model_id_env) or ""
         # Pinned in config; the THINKING env var overrides (off|low|on).
-        self.thinking = (os.environ.get(self.config.thinking_env) or self.config.thinking or "off").strip().lower()
+        # thinking=None (or enable_thinking=None) means "send no thinking flag".
+        env_thinking = (os.environ.get(self.config.thinking_env) or "").strip().lower()
+        if env_thinking:
+            self.thinking = env_thinking
+        elif self.config.thinking is None or self.config.enable_thinking is None:
+            self.thinking = None
+        else:
+            self.thinking = (self.config.thinking or "off").strip().lower()
         self._session = session or requests.Session()
 
     # The repr must never leak the key.
@@ -137,8 +153,11 @@ class NemotronModel:
             "max_tokens": self.config.max_tokens,
             "stream": False,
         }
-        # Reasoning control (see ModelConfig.thinking).
-        if self.thinking == "off":
+        # Reasoning control (see ModelConfig.thinking). None sends no flag at all;
+        # the default THINKING=off still sends {"enable_thinking": false}.
+        if self.thinking is None:
+            pass
+        elif self.thinking == "off":
             body["chat_template_kwargs"] = {"enable_thinking": False}
         elif self.thinking == "low":
             body["reasoning_effort"] = "low"

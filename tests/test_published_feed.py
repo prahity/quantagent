@@ -65,7 +65,8 @@ class PublishedFeedTest(unittest.TestCase):
         cfg = {"start": "2025-01-28", "end": "2025-02-04", "symbols": ["AAPL", "MSFT", "SPY"]}
         local_id, published_id = f"pub_local_{uuid.uuid4().hex[:6]}", f"pub_zet_{uuid.uuid4().hex[:6]}"
         svc = fixture_service(self.tmp / "a")
-        local = runner.run("momentum", 25, {**cfg, "run_id": local_id}, service=svc, verbose=False)
+        local = runner.run("momentum", 25, {**cfg, "run_id": local_id}, service=svc, verbose=False,
+                           backend_kind="sqlite")
 
         svc_b = fixture_service(self.tmp / "b")
         backend = PublishedSQLiteBackend(self.tmp / "published.sqlite", svc_b.store)

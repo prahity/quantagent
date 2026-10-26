@@ -41,6 +41,8 @@ What is built, what is verified, and what is left, mapped to the four phases of 
   - The fixture slice is published: AAPL, MSFT and SPY, 2025-01-27 → 2025-02-07, with 210 hourly bars, 30 daily bars and 5 news items.
 - [x] **Config:** `.env.example`, the dependencies (`sqlglot`, `jaydebeapi`, `jpype1`), a JDK 17 requirement, and `CLAUDE.md`.
 
+- [x] **Zetaris is the default backend locally** (`QUERY_BACKEND=zetaris` in `.env`). Use `--backend sqlite` to run offline. The offline tests pin SQLite.
+
 ### Verified
 - [x] `python -m unittest discover tests`: 43 tests pass (3 live tests skipped by default).
 - [x] `cd simulator && .venv/bin/pytest -q`: 33 tests pass.

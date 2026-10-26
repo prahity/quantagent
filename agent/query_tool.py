@@ -174,6 +174,7 @@ class QueryResult:
 class QueryBackend(ABC):
     """Executes already-validated, CTE-wrapped SQL. Two implementations share this API."""
 
+    dialect = "SQLite"      # SQL engine named in the policy prompt
     remote = False          # remote engines use QueryConfig.zetaris_timeout_s
     published_feed = False  # True: tables hold the whole published snapshot, not a per-run copy
 
@@ -268,6 +269,7 @@ class ZetarisJDBCBackend(QueryBackend):
     QUERY_BACKEND=zetaris.
     """
 
+    dialect = "Spark SQL"
     remote = True
     published_feed = True
 
