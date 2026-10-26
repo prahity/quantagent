@@ -163,7 +163,7 @@ def apply(notes: str, raw: str) -> str:
     for entry in drops:
         rule_id = entry.get("id")
         if rule_id not in by_id:
-            raise ValueError(f"cannot drop unknown rule {rule_id}")
+            continue
         _line(entry, "because", required=True)
         dropped.append(rule_id)
     rules = [rule for rule in rules if rule["id"] not in set(dropped)]

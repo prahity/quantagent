@@ -22,6 +22,23 @@ python -m meterless --say "Reply with one sentence confirming this connection wo
 
 `NemotronTrader` asks the model for orders and a reason. `meterless/action.py` copies `run_id`, `request_id`, `mode`, and the window from the simulator request, drops extra fields, and shrinks a buy that would exceed cash or `max_position_pct_equity`. A reply that is not JSON is a hold. The model does not set the fill price.
 
+## Recommended arms for integration
+
+`simulator/trial.py` defaults to the best Meterless memory setup from the Feb–Apr 2024 bakeoff, run side by side with no-memory:
+
+| Arm | What it is | Feb–Apr 2024 mean |
+| --- | --- | --- |
+| `memory` (default) | Fixed 21-session price brief (`--recall brief`) + `meterless/seeds/spread.md`, seed held fixed (`--forget-notes`) | **+0.59%** (compounded +1.74%) |
+| `nomem` | Current request only, no brief, no notebook | −0.35% (compounded −1.06%) |
+
+```bash
+cd simulator
+PYTHONPATH=.. python -u trial.py --out ../context/trials/integration --first 2024-02 --last 2024-04
+# same as: --arms memory,nomem --recall brief --seed-notes ../meterless/seeds/spread.md --forget-notes
+```
+
+Older ideas that lost to no-memory on that window: model-written SQL alone, notebook-only, and a brief with no seed. Results for the winning run are in `context/trials/mem-brief-seed-2024-02-04/`. Scoreboard: `context/trials/memory-improve/scoreboard.jsonl`.
+
 ## Swapping the SQL backend for Zetaris
 
 Analysis is one call, `AnalysisSource.execute(QueryRequest)`, in `meterless/query.py`. The trader, the trial, and H-MEM talk only to that call. Replacing SQLite with Zetaris means configuring `ZetarisSource`. It does not mean editing the trader or the agent's SQL.

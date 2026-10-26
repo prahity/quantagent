@@ -16,15 +16,41 @@ from typing import Any
 from meterless.action import fit_orders, structure_action
 from meterless.provider import MeterlessRuntime
 from meterless.query import AnalysisSource, QueryRequest, QueryResult
+from meterless.recall import fetch_brief
 
-_PROMPT = """You are the trading agent in a market simulator. Your goal is to end the window with more cash. Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. If you hold no shares and recent closes are higher than earlier ones, buy.
-Reply with one JSON object and no other text:
+_REPLY = """Reply with one JSON object and no other text:
 {"orders":[{"symbol":"AAPL","side":"BUY","quantity":10,"order_type":"MARKET"}],"reason":"one or two sentences"}
 orders may be empty, which means hold. side is BUY or SELL. quantity is the whole shares you choose, sized from the latest close and the cash you want in that symbol. There is no per-symbol size cap. order_type MARKET needs no limit price. A BUY must fit in cash. You can only SELL shares you hold.
 Use only the symbols, prices, and filings given here. Do not assume anything after as_of.
 
 Request:
 """
+
+_PROMPT_STYLES = {
+    "default": (
+        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
+        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
+        "If you hold no shares and recent closes are higher than earlier ones, buy.\n"
+        + _REPLY
+    ),
+    "deploy": (
+        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
+        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
+        "Idle cash is the main way this run loses to buy-and-hold. If cash is more than about 20% of equity and any "
+        "symbol's recent closes are rising, buy enough shares to put most of that cash to work. Split across rising "
+        "symbols when more than one is rising. Do not wait for a perfect signal.\n"
+        + _REPLY
+    ),
+    "equal": (
+        "You are the trading agent in a market simulator. Your goal is to end the window with more cash. "
+        "Cash and every open position are counted at the final close of this window. Cash by itself earns nothing. "
+        "When you are fully in cash, or nearly so, buy roughly equal dollar amounts of every tradeable symbol that "
+        "has a recent close, using nearly all of the cash. After that, hold unless a clear drop forces a sell.\n"
+        + _REPLY
+    ),
+}
+
+_PROMPT = _PROMPT_STYLES["default"]
 
 _BARS = 10
 _QUERY_LIMIT = 1
@@ -120,14 +146,28 @@ class NemotronTrader:
 
     name = "nemotron"
 
-    def __init__(self, runtime: MeterlessRuntime, memory: int = 0, notes: str = "", retries: int = 0, source: AnalysisSource | None = None):
+    def __init__(
+        self,
+        runtime: MeterlessRuntime,
+        memory: int = 0,
+        notes: str = "",
+        retries: int = 0,
+        source: AnalysisSource | None = None,
+        recall: str = "sql",
+        prompt_style: str = "default",
+    ):
         self.runtime = runtime
         self.memory = memory
         self.notes = notes
         self.retries = retries
         self.source = source
+        self.recall = recall
+        self.prompt_style = prompt_style if prompt_style in _PROMPT_STYLES else "default"
         self.log: list[dict] = []
         self.queries: list[QueryResult] = []
+
+    def _trade_prompt(self) -> str:
+        return _PROMPT_STYLES[self.prompt_style]
 
     def observe(self, request: dict, payload: dict, ack: dict) -> None:
         if self.memory <= 0:
@@ -146,7 +186,7 @@ class NemotronTrader:
         del self.log[: -self.memory]
 
     def _prompt(self, visible: dict) -> str:
-        prompt = _PROMPT + json.dumps(visible)
+        prompt = self._trade_prompt() + json.dumps(visible)
         if self.notes:
             prompt += "\n" + _NOTES_HEADER + self.notes
         if self.memory > 0 and self.log:
@@ -183,7 +223,7 @@ class NemotronTrader:
         return _hold(request, "meterless unavailable")
 
     def _query_prompt(self, visible: dict, found: list[QueryResult]) -> str:
-        prompt = _QUERY_PROMPT.format(schema=self.source.schema_text) + _PROMPT + json.dumps(visible)
+        prompt = _QUERY_PROMPT.format(schema=self.source.schema_text) + self._trade_prompt() + json.dumps(visible)
         if found:
             prompt += "\nSQL results for this decision. Cite these figures. Do not replace them:\n"
             prompt += "\n".join(f"{item.query_id} {item.goal}\n{item.text}" for item in found)
@@ -202,7 +242,19 @@ class NemotronTrader:
 
     def decide(self, request: dict, feed: Any = None) -> dict:
         visible = self._visible(request, feed)
-        if self.source is None:
+        if self.recall == "brief" and self.source is not None:
+            brief, found = fetch_brief(self.source, request)
+            self.queries.extend(found)
+            text = self._complete(self._prompt(visible) + "\n" + brief, request)
+            if isinstance(text, dict):
+                return text
+            parsed = _json_object(text)
+            if parsed is None or "orders" not in parsed:
+                return _hold(request, "model reply was not the action JSON")
+            action = _ready(parsed, request, visible)
+            action["reason"] = self._ground_reason(action["reason"], visible, found)
+            return action
+        if self.source is None or self.recall == "notes":
             text = self._complete(self._prompt(visible), request)
             if isinstance(text, dict):
                 return text

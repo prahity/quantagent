@@ -36,6 +36,14 @@ def test_add_appends_and_drop_removes_only_the_named_rule():
     assert "r3: Deploy cash when a name is trending up." in updated
 
 
+def test_a_drop_of_a_missing_rule_does_not_block_an_add():
+    updated = apply("", json.dumps({
+        "drop": [{"id": "r1", "because": "the notebook was empty"}],
+        "add": [{"text": "Buy symbols whose latest close is higher than the close 21 sessions earlier.", "evidence": "2024-02 cash sat idle. Unproven."}],
+    }))
+    assert updated.startswith("r1: Buy symbols whose latest close is higher")
+
+
 def test_an_amend_of_a_missing_rule_is_saved_as_a_new_rule():
     updated = apply("", json.dumps({"amend": [{"id": "r1", "text": "Buy when the close is higher than the prior close.", "evidence": "2024-01 the agent held cash. Unproven."}]}))
     assert updated.startswith("r1: Buy when the close is higher than the prior close.")
@@ -47,8 +55,9 @@ def test_a_rewritten_notebook_is_rejected():
         apply(NOTES, "r1: A completely new notebook.\nr2: Another new rule.")
     with pytest.raises(ValueError):
         apply(NOTES, json.dumps({"notebook": "r1: replacement"}))
-    with pytest.raises(ValueError):
-        apply(NOTES, json.dumps({"drop": [{"id": "r9", "because": "gone"}]}))
+    kept = apply(NOTES, json.dumps({"drop": [{"id": "r9", "because": "gone"}]}))
+    assert "r1: Enter after a 5-day high." in kept
+    assert "r2: Size each entry at 20% of equity." in kept
 
 
 def test_update_sends_the_current_notebook_and_applies_the_reply():

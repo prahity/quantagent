@@ -7,6 +7,7 @@ import pytest
 
 from meterless.action import fit_orders, structure_action
 from meterless.query import QueryRequest, SqliteSource, ZetarisSource, open_analysis_source
+from meterless.recall import fetch_brief
 from meterless.trader import NemotronTrader
 
 
@@ -144,6 +145,23 @@ def test_fit_orders_uses_cash_when_the_position_cap_is_off():
         "reason": "rising",
     }, request, {"AAPL": 190.0})
     assert action["orders"][0]["quantity"] == 51
+
+
+def test_brief_states_the_change_and_hides_a_later_close(tmp_path):
+    days = [(2, 100), (3, 102), (4, 104), (5, 106), (8, 108), (9, 110), (10, 112), (11, 120), (12, 999)]
+    bars = [
+        {"symbol": "AAPL", "interval": "daily", "ts": f"2024-01-{day:02d}T14:30:00Z", "open": close, "high": close, "low": close, "close": close, "volume": 1}
+        for day, close in days
+    ]
+    source = SqliteSource.build(tmp_path / "market.sqlite", bars, [])
+    text, found = fetch_brief(source, {
+        "run_id": "run", "request_id": "decision_00000", "as_of": "2024-01-12T14:30:00Z",
+        "data": {"symbols": ["AAPL"]},
+    })
+    assert found[0].error == ""
+    assert "999" not in text
+    assert "5 sessions earlier 2024-01-04 104.00 (+15.38%)" in text
+    assert "7 sessions earlier 2024-01-02 100.00 (+20.00%)" in text
 
 
 def test_open_rejects_an_unknown_backend(tmp_path):
