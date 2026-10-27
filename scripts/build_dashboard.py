@@ -609,6 +609,18 @@ ul.guarantees {{ margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted);
 .flash-counter {{ color: var(--muted); font-size: 0.82rem; margin: 0.35rem 0 0.75rem; }}
 .flash-body h3 {{ margin-top: 0.85rem; }}
 .flash-body {{ max-height: 420px; overflow: auto; }}
+.order-boxes {{ display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.35rem 0 0.15rem; }}
+.order-box {{
+  border: 1px solid var(--line); border-radius: 10px; padding: 0.45rem 0.65rem;
+  background: color-mix(in srgb, var(--bg) 55%, var(--panel)); min-width: 4.5rem;
+}}
+.order-box .sym {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }}
+.order-box .qty {{ font-family: var(--mono); font-size: 1.05rem; font-weight: 600; margin-top: 0.15rem; }}
+.order-box.buy .qty {{ color: #1f6b4a; }}
+.order-box.sell .qty {{ color: #9b2c2c; }}
+.order-box.hold {{ opacity: 0.85; }}
+.deck-title {{ margin: 0 0 0.35rem; font-size: 1rem; }}
+.deck-block + .deck-block {{ margin-top: 1.25rem; padding-top: 1.1rem; border-top: 1px solid var(--line); }}
 </style>
 </head>
 <body>
@@ -670,11 +682,24 @@ ul.guarantees {{ margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--muted);
 
   <section id="trace">
     <h2>Decision flashcards</h2>
-    <p class="lede">One decision at a time. Green = next-day equity up; red = next-day equity down. Use the side panels for earlier and later decisions.</p>
-    <div class="flash-wrap">
-      <button type="button" class="flash-nav" id="prevDecision" aria-label="Earlier decision">‹</button>
-      <div id="decisionCard" class="flashcard flat"><p class="empty">No decisions loaded.</p></div>
-      <button type="button" class="flash-nav" id="nextDecision" aria-label="Later decision">›</button>
+    <p class="lede">Separate decks for memory and no-memory. Green = next-day equity up; red = next-day equity down. Side panels move earlier or later in that deck.</p>
+
+    <div class="deck-block" data-arm="memory">
+      <h3 class="deck-title">Memory decisions</h3>
+      <div class="flash-wrap">
+        <button type="button" class="flash-nav" data-dir="-1" aria-label="Earlier memory decision">‹</button>
+        <div class="flashcard flat" data-card><p class="empty">No memory decisions.</p></div>
+        <button type="button" class="flash-nav" data-dir="1" aria-label="Later memory decision">›</button>
+      </div>
+    </div>
+
+    <div class="deck-block" data-arm="nomem">
+      <h3 class="deck-title">No-memory decisions</h3>
+      <div class="flash-wrap">
+        <button type="button" class="flash-nav" data-dir="-1" aria-label="Earlier no-memory decision">‹</button>
+        <div class="flashcard flat" data-card><p class="empty">No no-memory decisions.</p></div>
+        <button type="button" class="flash-nav" data-dir="1" aria-label="Later no-memory decision">›</button>
+      </div>
     </div>
   </section>
 </main>
@@ -728,9 +753,19 @@ const profitDatasets = Object.entries(series).map(([key, values]) => {{
   return {{ label: labels[key] || key, data: values, backgroundColor: barColors[key] || '#888' }};
 }}).filter(Boolean);
 
-const axisOpts = () => ({{
-  x: {{ ticks: {{ color: theme().muted }}, grid: {{ color: theme().line }} }},
-  y: {{ ticks: {{ color: theme().muted }}, grid: {{ color: theme().line }} }},
+const axisOpts = (xLabel, yLabel, extraX = {{}}, extraY = {{}}) => ({{
+  x: {{
+    title: {{ display: true, text: xLabel, color: theme().muted, font: {{ size: 12, weight: '500' }} }},
+    ticks: {{ color: theme().muted }},
+    grid: {{ color: theme().line }},
+    ...extraX,
+  }},
+  y: {{
+    title: {{ display: true, text: yLabel, color: theme().muted, font: {{ size: 12, weight: '500' }} }},
+    ticks: {{ color: theme().muted }},
+    grid: {{ color: theme().line }},
+    ...extraY,
+  }},
 }});
 
 const profitChart = new Chart(document.getElementById('profitChart'), {{
@@ -738,7 +773,8 @@ const profitChart = new Chart(document.getElementById('profitChart'), {{
   data: {{ labels: months, datasets: profitDatasets }},
   options: {{
     responsive: true, maintainAspectRatio: false,
-    scales: axisOpts(),
+    layout: {{ padding: {{ top: 4, bottom: 2 }} }},
+    scales: axisOpts('Month', 'Net profit ($)'),
     plugins: {{ legend: {{ labels: {{ color: theme().ink }} }} }},
   }},
 }});
@@ -766,11 +802,13 @@ function portfolioChart(canvasId, arm) {{
     data: {{ labels: days, datasets }},
     options: {{
       responsive: true, maintainAspectRatio: false,
+      layout: {{ padding: {{ top: 4, bottom: 2 }} }},
       interaction: {{ mode: 'index', intersect: false }},
-      scales: {{
-        x: {{ ticks: {{ color: theme().muted, maxRotation: 0, autoSkipPadding: 12 }}, grid: {{ display: false }} }},
-        y: {{ ticks: {{ color: theme().muted }}, grid: {{ color: theme().line }} }},
-      }},
+      scales: axisOpts(
+        'Trading day',
+        'Value ($)',
+        {{ ticks: {{ color: theme().muted, maxRotation: 0, autoSkipPadding: 12 }}, grid: {{ display: false }} }},
+      ),
       plugins: {{ legend: {{ labels: {{ color: theme().ink }} }} }},
     }},
   }});
@@ -822,7 +860,19 @@ function renderRules() {{
 }}
 renderRules();
 
-let decisionIndex = 0;
+const decks = {{
+  memory: {{
+    items: DATA.decisions.filter(d => d.arm === 'memory'),
+    index: 0,
+    root: document.querySelector('.deck-block[data-arm="memory"]'),
+  }},
+  nomem: {{
+    items: DATA.decisions.filter(d => d.arm === 'nomem'),
+    index: 0,
+    root: document.querySelector('.deck-block[data-arm="nomem"]'),
+  }},
+}};
+
 function decisionTone(d) {{
   const delta = d && d.next_day_outcome ? d.next_day_outcome.delta_equity : null;
   if (delta === null || delta === undefined || Number.isNaN(Number(delta))) return 'flat';
@@ -830,21 +880,38 @@ function decisionTone(d) {{
   if (Number(delta) < 0) return 'loss';
   return 'flat';
 }}
-function renderDecision(i) {{
-  const card = document.getElementById('decisionCard');
-  const prev = document.getElementById('prevDecision');
-  const next = document.getElementById('nextDecision');
-  const total = DATA.decisions.length;
+
+function orderBoxes(orders) {{
+  if (!orders || !orders.length) {{
+    return `<div class="order-boxes"><div class="order-box hold"><div class="sym">Decision</div><div class="qty">hold</div></div></div>`;
+  }}
+  return `<div class="order-boxes">${{orders.map(o => {{
+    const side = String(o.side || '').toLowerCase();
+    const sign = side === 'sell' ? '−' : side === 'buy' ? '+' : '';
+    return `<div class="order-box ${{esc(side)}}">
+      <div class="sym">${{esc(o.symbol || '?')}} · ${{esc(o.side || '')}}</div>
+      <div class="qty">${{sign}}${{esc(o.quantity)}}</div>
+    </div>`;
+  }}).join('')}}</div>`;
+}}
+
+function renderDeck(arm) {{
+  const deck = decks[arm];
+  if (!deck || !deck.root) return;
+  const card = deck.root.querySelector('[data-card]');
+  const prev = deck.root.querySelector('.flash-nav[data-dir="-1"]');
+  const next = deck.root.querySelector('.flash-nav[data-dir="1"]');
+  const total = deck.items.length;
   if (!total) {{
     card.className = 'flashcard flat';
-    card.innerHTML = '<p class="empty">No decisions loaded.</p>';
+    card.innerHTML = `<p class="empty">No ${{arm === 'memory' ? 'memory' : 'no-memory'}} decisions.</p>`;
     prev.disabled = true; next.disabled = true;
     return;
   }}
-  decisionIndex = Math.max(0, Math.min(total - 1, i));
-  prev.disabled = decisionIndex <= 0;
-  next.disabled = decisionIndex >= total - 1;
-  const d = DATA.decisions[decisionIndex];
+  deck.index = Math.max(0, Math.min(total - 1, deck.index));
+  prev.disabled = deck.index <= 0;
+  next.disabled = deck.index >= total - 1;
+  const d = deck.items[deck.index];
   if (!d || d.missing_run) {{
     card.className = 'flashcard flat';
     card.innerHTML = '<p class="empty">Run files were not found for this decision.</p>';
@@ -866,31 +933,30 @@ function renderDecision(i) {{
       <div class="muted">${{q.row_count || 0}} rows · first ${{(q.rows_preview || []).length}}</div>
       <pre>${{esc(JSON.stringify(q.rows_preview || [], null, 2))}}</pre>
     </div>`).join('') || '<p class="empty">No SQL for this decision.</p>';
-  const orders = (d.decision.orders || []);
-  const orderLine = orders.length
-    ? orders.map(o => `${{o.side}} ${{o.quantity}} ${{o.symbol}}`).join(' · ')
-    : 'hold';
+
+  const contextBlock = arm === 'memory'
+    ? `<h3>Rules in context</h3><pre>${{esc(d.notebook_retrieved || '(empty)')}}</pre>`
+    : '';
+
   card.innerHTML = `
     <div class="flash-head">
       <div>
-        <h3 class="flash-title">${{esc(d.arm)}} · ${{esc((d.as_of || '').slice(0,10))}}</h3>
+        <h3 class="flash-title">${{esc((d.as_of || '').slice(0,10))}}</h3>
         <div class="decision-meta" style="margin-top:0.35rem">
           <span class="chip">${{esc(d.request_id || '')}}</span>
           ${{reasonFlag}}
-          <span class="chip">${{esc(orderLine)}}</span>
         </div>
       </div>
       <div class="flash-delta ${{tone}}">${{delta == null ? '—' : money(delta)}} <span style="font-weight:500;font-size:0.8rem">next day</span></div>
     </div>
-    <div class="flash-counter">${{decisionIndex + 1}} / ${{total}}</div>
+    <div class="flash-counter">${{deck.index + 1}} / ${{total}}</div>
+    <h3>Decision</h3>
+    ${{orderBoxes(d.decision.orders || [])}}
     <div class="flash-body">
       <h3>Reason</h3>
       <pre>${{esc(d.decision.reason || '')}}</pre>
-      <h3>Rules in context</h3>
-      <pre>${{esc(d.notebook_retrieved || '(empty)')}}</pre>
-      <h3>SQL</h3>${{queries}}
-      <h3>Orders</h3>
-      <pre>${{esc(JSON.stringify(d.decision.orders || [], null, 2))}}</pre>
+      ${{contextBlock}}
+      ${{arm === 'memory' ? `<h3>SQL</h3>${{queries}}` : ''}}
       <h3>Fills</h3>
       <pre>${{esc(JSON.stringify(d.fills || [], null, 2))}}</pre>
       <h3>Next day</h3>
@@ -898,13 +964,18 @@ function renderDecision(i) {{
     </div>
   `;
 }}
-document.getElementById('prevDecision').addEventListener('click', () => renderDecision(decisionIndex - 1));
-document.getElementById('nextDecision').addEventListener('click', () => renderDecision(decisionIndex + 1));
-document.addEventListener('keydown', (e) => {{
-  if (e.key === 'ArrowLeft') renderDecision(decisionIndex - 1);
-  if (e.key === 'ArrowRight') renderDecision(decisionIndex + 1);
+
+Object.keys(decks).forEach(arm => {{
+  const deck = decks[arm];
+  if (!deck.root) return;
+  deck.root.querySelectorAll('.flash-nav').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      deck.index += Number(btn.getAttribute('data-dir'));
+      renderDeck(arm);
+    }});
+  }});
+  renderDeck(arm);
 }});
-renderDecision(0);
 
 document.getElementById('themeToggle').addEventListener('click', () => {{
   const cur = document.documentElement.getAttribute('data-theme');
