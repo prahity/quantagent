@@ -16,7 +16,7 @@ from typing import Any
 
 from meterless.action import fit_orders, structure_action
 from meterless.provider import MeterlessRuntime
-from meterless.query import AnalysisSource, QueryRequest, QueryResult
+from meterless.query import AnalysisSource, QueryRequest, QueryResult, column_hint
 from meterless.recall import fetch_brief
 
 _REPLY = """Reply with one JSON object and no other text:
@@ -63,12 +63,21 @@ _PROMPT = _PROMPT_STYLES["default"]
 
 _BARS = 10
 _QUERY_LIMIT = 1
+_SQL_REPAIRS = 1  # one more query, only after an SQL error
+_RULE_FEATURES = ("close", "ret_5", "ret_21", "ret_63", "vol_21", "ma_gap_21", "ma_gap_63", "dd_63", "rs_spy")
 _MAX_TOKENS = 700
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _SIM_RUNS = Path(__file__).resolve().parents[1] / "simulator" / "runs"
 
 _QUERY_PROMPT = """You are the trading agent. Historical prices, filings, and the feature view are in the SQL relations below, already cut off at this decision's as_of. Use SQL when you need history. Prefer `features` for returns, volatility, moving-average gaps, drawdown, relative strength versus SPY, and filing distances. Do not estimate a return, a price, or a filing date.
 {schema}
+These are the only columns. Any other name fails:
+{columns}
+`features` has one row per symbol at as_of. It has no ts, interval, or as_of column, so do not filter or sort it by time. Use `bars` for a price series.
+Examples that run:
+SELECT symbol, close, ret_5, ret_21, ret_63, vol_21, ma_gap_21, ma_gap_63, dd_63, rs_spy FROM features ORDER BY symbol
+SELECT symbol, ts, close FROM bars WHERE interval = 'daily' AND symbol = 'AAPL' ORDER BY ts DESC LIMIT 10
+SELECT symbol, form, title, published_at FROM filings ORDER BY published_at DESC LIMIT 5
 Return either {{"goal":"<what you need to know>","sql":"<one SELECT>"}} or the action JSON from the trading instructions.
 The simulator's as_of is fixed. Putting a later time in the SQL does not reveal it. A feature column is null when the released history is shorter than that window.
 
@@ -148,6 +157,17 @@ _NOTES_HEADER = """
 Strategy notebook. You wrote it after reviewing your results in earlier, completed periods. Apply its rules where they fit the current data:
 """
 
+_RULES_HEADER = """
+Notebook rules run on your account and today's released features. A target is a fraction of equity; the rest is cash. The orders are what the rule itself places today, sized from your cash and holdings; an empty list means the rule holds. These figures are computed, not missing.
+"""
+
+_RULES_TASK = """Choose one:
+(a) Apply one listed rule. Set "rule" to its exact name and copy that rule's orders for today exactly, including an empty list on a day it holds. The first rule is the notebook's recommendation; use it unless today's figures argue against it.
+(b) Apply none. Set "rule" to "none" and set "why_not" to figures shown here (today's features, the notebook's results) that make every listed rule wrong today. Low confidence alone is not a reason: the notebook weighed it when it chose the recommendation, and cash has no out-of-sample record either.
+Keeping more than half of equity in cash is allowed only if the chosen rule's targets say so, or under (b) with that evidence stated in why_not.
+Add "rule" and "why_not" to the action JSON: {"rule":"<name or none>","why_not":"<empty when a rule is applied>","orders":[...],"reason":"..."}
+"""
+
 
 class NemotronTrader:
     """Calls Meterless Runtime for each simulator decision request.
@@ -169,8 +189,11 @@ class NemotronTrader:
         recall: str = "sql",
         prompt_style: str = "default",
         log_dir: str | Path | None = None,
+        rule_view: Any = None,
     ):
         self.runtime = runtime
+        self.rule_view = rule_view
+        self.rule_choices: list[dict] = []
         self.memory = memory
         self.notes = notes
         self.retries = retries
@@ -201,10 +224,12 @@ class NemotronTrader:
         })
         del self.log[: -self.memory]
 
-    def _prompt(self, visible: dict) -> str:
+    def _prompt(self, visible: dict, rules: list[dict] | None = None) -> str:
         prompt = self._trade_prompt() + json.dumps(visible)
         if self.notes:
             prompt += "\n" + _NOTES_HEADER + self.notes
+        if rules:
+            prompt += _rules_text(rules, visible)
         if self.memory > 0 and self.log:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
         return prompt
@@ -280,13 +305,15 @@ class NemotronTrader:
             return text
         return _hold(request, "meterless unavailable")
 
-    def _query_prompt(self, visible: dict, found: list[QueryResult]) -> str:
-        prompt = _QUERY_PROMPT.format(schema=self.source.schema_text) + self._trade_prompt() + json.dumps(visible)
+    def _query_prompt(self, visible: dict, found: list[QueryResult], rules: list[dict] | None = None) -> str:
+        prompt = _QUERY_PROMPT.format(schema=self.source.schema_text, columns=column_hint()) + self._trade_prompt() + json.dumps(visible)
         if found:
             prompt += "\nSQL results for this decision. Cite these figures. Do not replace them:\n"
-            prompt += "\n".join(f"{item.query_id} {item.goal}\n{item.text}" for item in found)
+            prompt += "\n".join(_result_text(item) for item in found)
         if self.notes:
             prompt += "\n" + _NOTES_HEADER + self.notes
+        if rules:
+            prompt += _rules_text(rules, visible)
         if self.memory > 0 and self.log:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
         return prompt
@@ -302,7 +329,8 @@ class NemotronTrader:
         unsupported = not set(_NUMBER.findall(original)) <= set(_NUMBER.findall(sources))
         return original, unsupported
 
-    def _apply(self, parsed: dict, request: dict, visible: dict, found: list[QueryResult] | None) -> dict:
+    def _apply(self, parsed: dict, request: dict, visible: dict, found: list[QueryResult] | None,
+               rules: list[dict] | None = None) -> dict:
         action, original_orders = _ready(parsed, request, visible)
         unsupported = None
         if found is not None:
@@ -315,58 +343,171 @@ class NemotronTrader:
             "reason": action.get("reason"),
             "reason_unsupported": unsupported,
         }
+        if rules is not None:
+            record["rule"] = self._log_rule(parsed, request, visible, rules, action)
         self.repairs.append(record)
         self._append_log(request, "order_repairs.jsonl", record)
         return action
 
+    def _log_rule(self, parsed: dict, request: dict, visible: dict, rules: list[dict], action: dict) -> str:
+        named = " ".join(str(parsed.get("rule") or "").split())[:80]
+        by_name = {rule["name"]: rule for rule in rules}
+        chosen = by_name.get(named)
+        choice = {
+            "request_id": request.get("request_id"),
+            "as_of": request.get("as_of"),
+            "step": request.get("step"),
+            "rule": named or "(missing)",
+            "listed": chosen is not None,
+            "why_not": " ".join(str(parsed.get("why_not") or "").split())[:600],
+            "rule_targets": None if chosen is None else chosen["targets"],
+            "rule_orders": None if chosen is None else _order_keys(chosen.get("orders")),
+            "matches_rule_orders": None if chosen is None else _order_keys(parsed.get("orders")) == _order_keys(chosen.get("orders")),
+            "rebalance_today": None if chosen is None else chosen["rebalance_today"],
+            "weights_before": _weights(visible),
+            "orders": _order_keys(action.get("orders")),
+            "recommended": rules[0]["name"] if rules else None,
+            "recommended_orders": _order_keys(rules[0].get("orders")) if rules else None,
+            "reason": action.get("reason"),
+        }
+        self.rule_choices.append(choice)
+        self._append_log(request, "rule_choices.jsonl", choice)
+        return choice["rule"]
+
+    def _rules(self, request: dict, feed: Any) -> list[dict] | None:
+        if self.rule_view is None:
+            return None
+        try:
+            return self.rule_view(request, feed)
+        except Exception as exc:
+            self._append_log(request, "rule_choices.jsonl", {"request_id": request.get("request_id"), "error": f"rule view failed: {exc}"})
+            return []
+
+    def _execute(self, request: dict, parsed: dict, sql: str) -> QueryResult:
+        result = self.source.execute(QueryRequest(
+            run_id=str(request.get("run_id") or ""),
+            request_id=str(request.get("request_id") or ""),
+            query_id=f"{request.get('request_id')}-q{len(self.queries) + 1}",
+            goal=str(parsed.get("goal") or "")[:300],
+            sql=sql,
+            as_of=str(request.get("as_of") or ""),
+        ))
+        self._log_query(request, result, sql.strip())
+        return result
+
     def decide(self, request: dict, feed: Any = None) -> dict:
         visible = self._visible(request, feed)
+        rules = self._rules(request, feed)
         if self.recall == "brief" and self.source is not None:
             brief, found = fetch_brief(self.source, request)
             for item in found:
                 self._log_query(request, item)
-            text = self._complete(self._prompt(visible) + "\n" + brief, request)
+            text = self._complete(self._prompt(visible, rules) + "\n" + brief, request)
             if isinstance(text, dict):
                 return text
             parsed = _json_object(text)
             if parsed is None or "orders" not in parsed:
                 return _hold(request, "model reply was not the action JSON")
-            return self._apply(parsed, request, visible, found)
+            return self._apply(parsed, request, visible, found, rules)
         if self.source is None or self.recall == "notes":
-            text = self._complete(self._prompt(visible), request)
+            text = self._complete(self._prompt(visible, rules), request)
             if isinstance(text, dict):
                 return text
             parsed = _json_object(text)
             if parsed is None:
                 return _hold(request, "model reply was not the action JSON")
-            return self._apply(parsed, request, visible, None)
+            return self._apply(parsed, request, visible, None, rules)
 
         found: list[QueryResult] = []
-        for _ in range(_QUERY_LIMIT):
-            text = self._complete(self._query_prompt(visible, found), request)
+        planned, repairs = _QUERY_LIMIT, _SQL_REPAIRS
+        while planned > 0:
+            text = self._complete(self._query_prompt(visible, found, rules), request)
             if isinstance(text, dict):
                 return text
             parsed = _json_object(text) or {}
             sql = parsed.get("sql")
             if isinstance(sql, str) and sql.strip():
-                result = self.source.execute(QueryRequest(
-                    run_id=str(request.get("run_id") or ""),
-                    request_id=str(request.get("request_id") or ""),
-                    query_id=f"{request.get('request_id')}-q{len(self.queries) + 1}",
-                    goal=str(parsed.get("goal") or "")[:300],
-                    sql=sql,
-                    as_of=str(request.get("as_of") or ""),
-                ))
-                self._log_query(request, result, sql.strip())
+                result = self._execute(request, parsed, sql)
                 found.append(result)
+                if result.error and repairs > 0:
+                    repairs -= 1
+                    continue
+                planned -= 1
                 continue
             if "orders" in parsed:
-                return self._apply(parsed, request, visible, found)
+                return self._apply(parsed, request, visible, found, rules)
             break
-        text = self._complete(self._query_prompt(visible, found) + "\nReply with the action JSON only.", request)
+        text = self._complete(self._query_prompt(visible, found, rules) + "\nReply with the action JSON only.", request)
         if isinstance(text, dict):
             return text
         parsed = _json_object(text)
         if parsed is None or "orders" not in parsed:
             return _hold(request, "model reply was not the action JSON")
-        return self._apply(parsed, request, visible, found)
+        return self._apply(parsed, request, visible, found, rules)
+
+
+def _result_text(item: QueryResult) -> str:
+    if not item.error:
+        return f"{item.query_id} {item.goal}\n{item.text}"
+    return (
+        f"{item.query_id} {item.goal}\nSQL error: {item.error}\n"
+        f"Available columns:\n{column_hint()}\n"
+        "Fix the query using only these columns, or give the action."
+    )
+
+
+def _weights(visible: dict) -> dict[str, float]:
+    account = visible.get("account") or {}
+    equity = float(account.get("equity") or 0)
+    if equity <= 0:
+        return {}
+    out = {}
+    for position in account.get("positions") or []:
+        value = position.get("market_value")
+        if value is None:
+            value = float(position.get("quantity") or 0) * float(position.get("mark_price") or 0)
+        if value:
+            out[str(position.get("symbol"))] = round(float(value) / equity, 4)
+    out["cash"] = round(float(account.get("cash") or 0) / equity, 4)
+    return out
+
+
+def _order_keys(orders: Any) -> list[list]:
+    keys = []
+    for order in orders or []:
+        if isinstance(order, dict):
+            try:
+                keys.append([str(order.get("side", "")).upper(), int(float(order.get("quantity") or 0)), str(order.get("symbol", "")).upper()])
+            except (TypeError, ValueError):
+                continue
+    return sorted(keys)
+
+
+def _rules_text(rules: list[dict], visible: dict) -> str:
+    lines = [_RULES_HEADER.rstrip("\n")]
+    for rule in rules:
+        targets = rule.get("targets") or {}
+        held = ", ".join(f"{symbol} {weight * 100:.1f}%" for symbol, weight in sorted(targets.items()))
+        cash = max(0.0, 1 - sum(targets.values())) * 100
+        today = "yes" if rule.get("rebalance_today") else "no, the rule holds today"
+        orders = json.dumps(rule.get("orders") or [])
+        lines.append(
+            f"- {rule['name']}: targets {held or 'no stock'}, cash {cash:.1f}%. "
+            f"Orders today: {orders} ({rule.get('why_orders') or 'computed'}). "
+            f"Rebalances every {rule['rebalance_every']} sessions; rebalance today: {today}. "
+            f"Sells everything if its own drawdown reaches {float(rule.get('drawdown_cut') or 0) * 100:.0f}%. "
+            f"Explore excess {rule['excess_pp']:+.2f} pp vs buy-and-hold, confidence {rule['confidence']}, "
+            f"{rule.get('oos_months', 0)} out-of-sample months."
+        )
+    features = rules[0].get("features") if rules else None
+    if features:
+        lines.append("Today's released features:")
+        for row in features:
+            cells = ", ".join(
+                f"{key} {'null' if row.get(key) is None else round(float(row[key]), 4)}"
+                for key in _RULE_FEATURES
+            )
+            lines.append(f"  {row.get('symbol')}: {cells}")
+    weights = _weights(visible)
+    lines.append("Your weights now: " + (", ".join(f"{key} {value * 100:.1f}%" for key, value in weights.items()) or "unknown"))
+    return "\n" + "\n".join(lines) + "\n" + _RULES_TASK

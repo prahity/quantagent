@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s07-4c11",
+  "parent_id": null,
+  "name": "vol-low-top1",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "volatility",
+    "lookback": 21,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.4,
+  "cash_floor": 0.2,
+  "rebalance_every": 5,
+  "min_weight_change": 0.03,
+  "drawdown_cut": 0.08,
+  "origin": "fallback"
+}

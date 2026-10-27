@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s07-8420",
+  "parent_id": null,
+  "name": "filing_event_spy",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "filing_event",
+    "lookback": 5,
+    "max_days_since_filing": 30,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.2,
+  "cash_floor": 0.15,
+  "rebalance_every": 5,
+  "min_weight_change": 0.05,
+  "drawdown_cut": 0.1,
+  "origin": "model"
+}

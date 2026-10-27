@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s06-3c0b",
+  "parent_id": null,
+  "name": "relstr_top3",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "relative_strength",
+    "lookback": 63,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.2,
+  "cash_floor": 0.1,
+  "rebalance_every": 5,
+  "min_weight_change": 0.03,
+  "drawdown_cut": 0.11,
+  "origin": "model"
+}

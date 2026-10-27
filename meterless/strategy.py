@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from meterless.query import AnalysisSource, QueryRequest
+from meterless.query import RELATION_COLUMNS, AnalysisSource, QueryRequest
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -421,10 +421,7 @@ def load_features(source: AnalysisSource, as_of: str, symbols: list[str]) -> lis
 
 load_features.last_error = ""
 
-_FEATURE_COLUMNS = (
-    "symbol", "close", "ret_5", "ret_21", "ret_63", "vol_21", "ma_gap_21", "ma_gap_63",
-    "dd_63", "rs_spy", "days_since_filing", "days_until_filing", "last_filing", "next_filing",
-)
+_FEATURE_COLUMNS = RELATION_COLUMNS["features"]
 _FEATURE_KIND = {
     "symbol": "STRING", "close": "DOUBLE", "ret_5": "DOUBLE", "ret_21": "DOUBLE", "ret_63": "DOUBLE",
     "vol_21": "DOUBLE", "ma_gap_21": "DOUBLE", "ma_gap_63": "DOUBLE", "dd_63": "DOUBLE", "rs_spy": "DOUBLE",

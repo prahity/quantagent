@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s02-f8db",
+  "parent_id": null,
+  "name": "mom_5_top3",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.2,
+  "cash_floor": 0.15,
+  "rebalance_every": 1,
+  "min_weight_change": 0.03,
+  "drawdown_cut": 0.15,
+  "origin": "model"
+}

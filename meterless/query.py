@@ -44,6 +44,32 @@ ret_5, ret_21 and ret_63 are the close-to-close return over that many released s
 Reply with one SELECT, or WITH ... SELECT, reading only bars, filings, and features.
 """
 
+RELATION_COLUMNS: dict[str, tuple[str, ...]] = {
+    "features": (
+        "symbol", "close", "ret_5", "ret_21", "ret_63", "vol_21", "ma_gap_21", "ma_gap_63",
+        "dd_63", "rs_spy", "days_since_filing", "days_until_filing", "last_filing", "next_filing",
+    ),
+    "bars": ("symbol", "interval", "ts", "open", "high", "low", "close", "volume"),
+    "filings": ("symbol", "form", "title", "published_at", "available_at"),
+}
+
+
+def column_hint() -> str:
+    """Every column the agent may select, one relation per line."""
+    return "\n".join(f"{name}: {', '.join(columns)}" for name, columns in RELATION_COLUMNS.items())
+
+
+def sql_error_text(raw: Any) -> str:
+    """The engine's own message without the Java wrapper or positions in the bound statement."""
+    text = " ".join(str(raw).split())
+    match = re.search(r"<<<(.*?)(?:>>>|$)", text)
+    if match:
+        text = match.group(1)
+    text = re.split(r";\s*'|\s\+-\s", text)[0]
+    text = re.sub(r";?\s*line \d+ pos \d+", "", text)
+    return text.strip(" ;.")[:400]
+
+
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NOMINAL_SECONDS = {"daily": 86400, "hourly": 3600}
 _ROW_LIMIT = 30
@@ -620,7 +646,7 @@ class JdbcZetarisSource:
         try:
             columns, fetched = self._fetch(statement)
         except Exception as exc:
-            return _result(request, self.name, self.data_version, started, error=str(exc).splitlines()[0][-300:])
+            return _result(request, self.name, self.data_version, started, error=sql_error_text(exc))
         cap = _ROW_LIMIT if row_limit is None else int(row_limit)
         truncated = len(fetched) > cap
         rows = []

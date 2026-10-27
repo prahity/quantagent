@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s03-bde9",
+  "parent_id": null,
+  "name": "mean_rev_5_spy",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "mean_reversion",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 2,
+    "threshold": null
+  },
+  "target_weight": 0.3,
+  "cash_floor": 0.1,
+  "rebalance_every": 5,
+  "min_weight_change": 0.05,
+  "drawdown_cut": 0.12,
+  "origin": "model"
+}

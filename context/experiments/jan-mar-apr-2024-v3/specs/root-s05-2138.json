@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s05-2138",
+  "parent_id": null,
+  "name": "rev-21-top1",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "mean_reversion",
+    "lookback": 21,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.3,
+  "cash_floor": 0.25,
+  "rebalance_every": 5,
+  "min_weight_change": 0.05,
+  "drawdown_cut": 0.1,
+  "origin": "fallback"
+}

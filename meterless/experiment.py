@@ -28,8 +28,9 @@ SIM = REPO / "simulator"
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SIM))
 
-from agent.rules import RuleRunner  # noqa: E402
+from agent.rules import RuleRunner, _targets  # noqa: E402
 from agent.scripted import AccumulatingBuyAndHold, CashOnlyAgent  # noqa: E402
+from meterless import explore_notebook  # noqa: E402
 from meterless.provider import MeterlessRuntime, ProviderError, load_settings  # noqa: E402
 from meterless.query import open_analysis_source  # noqa: E402
 from meterless.strategy import (  # noqa: E402
@@ -45,13 +46,20 @@ from sim.service import SimulatorService  # noqa: E402
 from sim.store import SnapshotStore  # noqa: E402
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
-_PROPOSE_TOKENS = (2200, 1800)
-_NOTE_TOKENS = (2500, 700)
-_MEMORY_TOKENS = (3500, 1000)  # one SQL call or one action call: prompt, completion
-_NOMEM_TOKENS = (2800, 800)
-_CALLS_PER_DECISION = 2  # recall=sql asks for SQL, then for the action
-_SECONDS_PER_CALL = 4.7  # April 2024 test: 44 calls per arm in 206s, with two arms overlapping
+_PROPOSE_ATTEMPTS = 3
+# Measured on the April 2024 round through Meterless (jan-mar-apr-2024-v4), thinking off.
+_PROPOSE_TOKENS = (2200, 1300)  # prompt, completion per propose call
+_PROPOSE_CALLS_PER_ROUND = 1.5  # one reply in three failed to parse before repair
+_PROPOSE_SECONDS_PER_CALL = 19.0
+_MEMORY_TOKENS = (7372, 157)  # per call: the notebook and rule orders make the prompt long
+_NOMEM_TOKENS = (2846, 143)
+_MEMORY_CALLS_PER_DECISION = 1.15  # 25 calls for 22 decisions: the rule orders make SQL optional
+_NOMEM_CALLS_PER_DECISION = 2.0  # SQL, then the action
+_MEMORY_SECONDS_PER_CALL = 2.9  # arm wall / calls: model latency plus SQL and simulator steps
+_NOMEM_SECONDS_PER_CALL = 2.2
+_SECONDS_PER_FEATURE_DAY = 2.5  # one JDBC feature view per session (measured 2.1 to 3.7)
+_BACKTEST_SECONDS_PER_SESSION = 0.08  # one rule over one session, per worker
+_CASH_RATE = 0.05
 _ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash")
 _CSV_FIELDS = [
     "round", "phase", "arm", "repeat", "window_start", "window_end", "spec_id", "parent_id", "run_id",
@@ -66,20 +74,10 @@ Return one JSON object and no other text:
 signal.kind is momentum, mean_reversion, volatility, relative_strength, or filing_event.
 lookback is 5, 21, or 63. The runner ranks released features: 5/21/63-day return, 21-day volatility, 21/63-day MA gap, drawdown from the 63-day high, return minus SPY, days since the last released filing, days until a released filing whose date is still ahead.
 target_weight is the fraction for each selected name and must be from 0 to 0.40. cash_floor is the fraction kept in cash.
-Write {count} different rules. Do not copy one rule with a renamed field.
+Write {count} different rules. Do not copy one rule with a renamed field. Each rule is its own {{...}} object inside the strategies list, with only the keys shown.
 
 Notebook from earlier explore windows only:
 {notes}
-"""
-
-_FINDINGS = """You are writing the strategy notebook after an explore window. The test window has not been run. Do not mention any date on or after the test, and do not invent numbers.
-Quote only numbers that appear in the results. Say what worked, what failed, the sample size, and that the sample is too small to be sure.
-Return one JSON object and no other text:
-{{"findings":[{{"text":"<one rule>","evidence":"<numbers from the results, the sample size, and the uncertainty>"}}]}}
-At most 6 findings.
-
-Results:
-{results}
 """
 
 
@@ -172,10 +170,11 @@ class FeatureCache:
             return self.cache[key]
 
     def prefetch(self, as_ofs: list[str]) -> None:
+        started = time.perf_counter()
         for index, as_of in enumerate(as_ofs, 1):
             self(as_of)
             if index == 1 or index == len(as_ofs) or index % 5 == 0:
-                print(f"features {index}/{len(as_ofs)}", flush=True)
+                print(f"features {index}/{len(as_ofs)} {time.perf_counter() - started:.1f}s", flush=True)
 
 
 class LockedSource:
@@ -248,7 +247,7 @@ def run_config(start: str, end: str, symbols: list[str], label: str, run_id: str
         "end": end,
         "initial_cash": 10000,
         "daily_deposit": 200,
-        "cash_annual_rate": 0.05,
+        "cash_annual_rate": _CASH_RATE,
         "symbols": symbols,
         "label": label,
         "execution": {"max_position_pct_equity": 0},
@@ -350,13 +349,34 @@ def _run_one(agent: Any, cfg: dict, store: SnapshotStore, **meta: Any) -> dict:
         return _row(report=None, wall=0, error=f"{type(exc).__name__}: {exc}", **meta)
 
 
-def propose_specs(runtime: Any, notes: str, symbols: list[str], count: int, parent_id: str | None) -> list[StrategySpec]:
+def _repair_strategies(text: str) -> str:
+    """Nemotron sometimes drops the `{` before the next rule, or leaves a key after a closed rule."""
+    text = re.sub(r'\}\s*,\s*"description"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}', "}", text)
+    return re.sub(r'\}\s*,\s*"name"\s*:', '},{"name":', text)
+
+
+def propose_specs(runtime: Any, notes: str, symbols: list[str], count: int, parent_id: str | None,
+                  attempts: int = _PROPOSE_ATTEMPTS) -> list[StrategySpec]:
     prompt = _PROPOSE.format(universe=json.dumps(symbols), count=count, notes=notes or "(empty)")
     specs: list[StrategySpec] = []
-    try:
-        specs = parse_specs(_json_blob(runtime.complete(prompt, max_tokens=4096)), parent_id, symbols)
-    except Exception as exc:
-        print(f"propose failed ({type(exc).__name__}); filling the round from fallback rules", flush=True)
+    for attempt in range(1, attempts + 1):
+        try:
+            text = runtime.complete(prompt, max_tokens=4096)
+        except Exception as exc:
+            print(f"propose call {attempt} failed ({type(exc).__name__})", flush=True)
+            continue
+        for candidate in (text, _repair_strategies(text)):
+            try:
+                specs = parse_specs(_json_blob(candidate), parent_id, symbols)
+            except Exception:
+                continue
+            if specs:
+                break
+        if specs:
+            break
+        print(f"propose reply {attempt} was not valid JSON", flush=True)
+    if not specs:
+        print("propose failed; filling the round from fallback rules", flush=True)
     specs = specs[:count]
     have = {spec.name for spec in specs}
     if len(specs) < count:
@@ -374,98 +394,34 @@ def propose_specs(runtime: Any, notes: str, symbols: list[str], count: int, pare
     return specs
 
 
-def _compact(rows: list[dict]) -> list[dict]:
-    keep = ("spec_id", "arm", "net_profit", "twr", "max_drawdown", "sharpe", "turnover", "fills", "rejections")
-    out = []
-    for row in rows:
-        item = {key: row.get(key) for key in keep}
-        for key, value in item.items():
-            if isinstance(value, float):
-                item[key] = round(value, 4)
-        out.append(item)
-    return out
-
-
-def mechanical_findings(rows: list[dict], sample: dict) -> str:
-    """Findings built only from explore numbers, used when the model reply is unusable."""
-    ranked = [row for row in rows if row.get("net_profit") is not None and row.get("arm") == "explore"]
-    ranked.sort(key=lambda row: row["net_profit"], reverse=True)
-    lines = []
-    if ranked:
-        best, worst = ranked[0], ranked[-1]
-        lines.append(
-            "r1: The highest explore profit came from "
-            f"{best['spec_id']} with net profit {best['net_profit']:.2f}, "
-            f"time-weighted return {best['twr']:.2f}, drawdown {best['max_drawdown']:.2f}, "
-            f"and excess {best.get('excess', 0):.2f} versus buy-and-hold."
-        )
-        lines.append(
-            f"evidence: sample_days={sample['n_days']} n_specs={sample['n_specs']} "
-            f"window {sample['explore_start']} to {sample['explore_end']}. "
-            "One window is a small sample, so this ranking is uncertain."
-        )
-        lines.append(
-            f"r2: The weakest explore profit was {worst['spec_id']} at {worst['net_profit']:.2f}. "
-            "Do not repeat a rule that lost to cash and to buy-and-hold on this sample."
-        )
-        lines.append(
-            f"evidence: worst net profit {worst['net_profit']:.2f}, drawdown {worst['max_drawdown']:.2f}, "
-            f"turnover {worst['turnover']:.4f}. sample_days={sample['n_days']}."
-        )
-    else:
-        lines.append("r1: No explore rule finished, so there is nothing to carry into the test.")
-        lines.append(f"evidence: sample_days={sample['n_days']} n_specs={sample['n_specs']}. The sample is empty and uncertain.")
-    return "\n".join(lines)
-
-
-def render_findings(raw: str, evidence: str, sample: dict, rows: list[dict]) -> str:
-    try:
-        payload = _json_blob(raw)
-    except Exception:
-        return mechanical_findings(rows, sample)
-    findings = payload.get("findings") if isinstance(payload, dict) else None
-    if not isinstance(findings, list) or not findings:
-        return mechanical_findings(rows, sample)
-    allowed = set(_NUMBER.findall(evidence))
-    blocks = []
-    next_id = 1
-    for item in findings[:6]:
-        if not isinstance(item, dict):
-            continue
-        text = " ".join(str(item.get("text") or "").split())
-        proof = " ".join(str(item.get("evidence") or "").split())
-        if not text or not proof:
-            continue
-        if not set(_NUMBER.findall(text + " " + proof)) <= allowed:
-            continue
-        if leaks_test_window(text + " " + proof, sample["test_start"]):
-            continue
-        blocks.append(f"r{next_id}: {text[:400]}\nevidence: {proof[:400]}")
-        next_id += 1
-    if not blocks:
-        return mechanical_findings(rows, sample)
-    if "uncertain" not in raw.lower() and "small sample" not in raw.lower():
-        blocks.append(
-            f"r{next_id}: Treat the explore ranking as uncertain.\n"
-            f"evidence: sample_days={sample['n_days']} n_specs={sample['n_specs']}. One window is a small sample."
-        )
-    return "\n\n".join(blocks)
-
-
-def write_findings(runtime: Any, prior: str, rows: list[dict], sample: dict) -> str:
-    assert_rows_before(rows, sample["test_start"])
-    payload = json.dumps({"sample": {key: sample[key] for key in ("explore_start", "explore_end", "n_days", "n_specs")}, "results": _compact(rows)}, indent=1)
-    if leaks_test_window(payload, sample["test_start"]):
-        raise ValueError("explore findings payload contains a test-window date")
-    try:
-        raw = runtime.complete(_FINDINGS.format(results=payload) + "\n\nPrior notebook:\n" + (prior or "(empty)"), max_tokens=1500)
-    except Exception as exc:
-        print(f"findings call failed ({type(exc).__name__}); writing the numeric summary", flush=True)
-        raw = ""
-    text = render_findings(raw, payload, sample, rows) if raw else mechanical_findings(rows, sample)
-    if leaks_test_window(text, sample["test_start"]):
-        text = mechanical_findings(rows, sample)
-    return text
+def write_notebook(out: Path, store: SnapshotStore, symbols: list[str], spec: dict, rows: list[dict], bench: dict,
+                   specs: dict[str, dict], sessions: int, track: list[dict], notebook_id: str, parent: str | None) -> dict:
+    """Build the explore notebook from explore runs and finished test months, then save it as JSON and text."""
+    assert_rows_before(rows + [bench], spec["test_start"])
+    nb = explore_notebook.build_notebook(
+        notebook_id=notebook_id,
+        parent_id=parent,
+        round_id=spec["round"],
+        explore_start=spec["explore_start"],
+        explore_end=spec["explore_end"],
+        test_start=spec["test_start"],
+        sessions=sessions,
+        rows=rows,
+        bench=bench,
+        specs=specs,
+        market=explore_notebook.market_conditions(store, symbols, spec["explore_start"], spec["explore_end"]),
+        track=track,
+        runs_dir=SIM / "runs",
+        cash_annual_rate=_CASH_RATE,
+    )
+    nb["text"] = explore_notebook.render_notebook(nb)
+    if leaks_test_window(json.dumps(nb, default=str), spec["test_start"]):
+        raise ValueError("explore notebook contains a date from the test window")
+    directory = out / "notebooks"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{notebook_id}.md").write_text(nb["text"] + "\n", encoding="utf-8")
+    (directory / f"{notebook_id}.json").write_text(json.dumps(nb, indent=2, default=str), encoding="utf-8")
+    return nb
 
 
 def best_explore(rows: list[dict]) -> dict:
@@ -490,39 +446,37 @@ def _spec_dump(out: Path, spec: StrategySpec) -> None:
 
 
 def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: list[int], test_days: list[int],
-                 llm_concurrency: int = 2) -> dict:
-    """Count model calls. Rule backtests, buy-and-hold, and cash call no model.
+                 llm_concurrency: int = 2, specs_per_round: int = 12, workers: int = 4,
+                 unique_days: int | None = None) -> dict:
+    """Count model calls and wall time. Rule backtests, buy-and-hold, and cash call no model.
 
-    Each test decision is two calls: the SQL the model writes, then the action.
+    A no-memory decision is two calls (SQL, then the action). The memory agent usually
+    answers in one because the rule orders are in its prompt. The notebook calls no model.
     """
-    propose = len(rounds) * n_rounds
-    notes = len(rounds) * n_rounds
+    propose = round(len(rounds) * n_rounds * _PROPOSE_CALLS_PER_ROUND)
     decisions = sum(test_days) * repeats
-    memory = decisions * _CALLS_PER_DECISION
-    nomem = memory
-    calls = propose + notes + memory + nomem
-    prompt = (
-        propose * _PROPOSE_TOKENS[0]
-        + notes * _NOTE_TOKENS[0]
-        + memory * _MEMORY_TOKENS[0]
-        + nomem * _NOMEM_TOKENS[0]
-    )
-    completion = (
-        propose * _PROPOSE_TOKENS[1]
-        + notes * _NOTE_TOKENS[1]
-        + memory * _MEMORY_TOKENS[1]
-        + nomem * _NOMEM_TOKENS[1]
-    )
+    memory = round(decisions * _MEMORY_CALLS_PER_DECISION)
+    nomem = round(decisions * _NOMEM_CALLS_PER_DECISION)
+    calls = propose + memory + nomem
+    prompt = propose * _PROPOSE_TOKENS[0] + memory * _MEMORY_TOKENS[0] + nomem * _NOMEM_TOKENS[0]
+    completion = propose * _PROPOSE_TOKENS[1] + memory * _MEMORY_TOKENS[1] + nomem * _NOMEM_TOKENS[1]
     in_rate, out_rate = token_rates()
-    workers = max(int(llm_concurrency), 1)
+    gate = max(int(llm_concurrency), 1)
+    feature_days = sum(explore_days) + sum(test_days)
+    propose_seconds = propose * _PROPOSE_SECONDS_PER_CALL
+    test_seconds = (memory * _MEMORY_SECONDS_PER_CALL + nomem * _NOMEM_SECONDS_PER_CALL) / gate
+    backtest_seconds = sum(explore_days) * n_rounds * specs_per_round * _BACKTEST_SECONDS_PER_SESSION / max(workers, 1)
+    feature_seconds = feature_days * _SECONDS_PER_FEATURE_DAY
+    cached_seconds = (unique_days if unique_days is not None else feature_days) * _SECONDS_PER_FEATURE_DAY
+    base = propose_seconds + test_seconds + backtest_seconds
     return {
         "rounds": rounds,
         "explore_rounds_each": n_rounds,
+        "repeats": repeats,
         "propose_calls": propose,
-        "notebook_calls": notes,
+        "notebook_calls": 0,
         "memory_decision_calls": memory,
         "nomem_decision_calls": nomem,
-        "calls_per_decision": _CALLS_PER_DECISION,
         "rule_buyhold_cash_calls": 0,
         "llm_calls": calls,
         "estimated_prompt_tokens": prompt,
@@ -531,9 +485,18 @@ def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: l
         "input_usd_per_mtok": in_rate,
         "output_usd_per_mtok": out_rate,
         "estimated_cost": prompt / 1e6 * in_rate + completion / 1e6 * out_rate,
-        "estimated_wall_seconds": calls / workers * _SECONDS_PER_CALL,
-        "seconds_per_call": _SECONDS_PER_CALL,
-        "llm_concurrency": workers,
+        "estimated_propose_seconds": propose_seconds,
+        "estimated_test_model_seconds": test_seconds,
+        "estimated_wall_seconds": propose_seconds + test_seconds,
+        "estimated_backtest_seconds": backtest_seconds,
+        "feature_days": feature_days,
+        "unique_feature_days": unique_days if unique_days is not None else feature_days,
+        "seconds_per_feature_day": _SECONDS_PER_FEATURE_DAY,
+        "estimated_feature_seconds": feature_seconds,
+        "estimated_cached_feature_seconds": cached_seconds,
+        "estimated_total_seconds": base + feature_seconds,
+        "estimated_total_cached_seconds": base + cached_seconds,
+        "llm_concurrency": gate,
         "explore_days": explore_days,
         "test_days": test_days,
     }
@@ -548,10 +511,10 @@ def print_plan(plan: dict) -> None:
             flush=True,
         )
     print(
-        f"propose {plan['propose_calls']}  notebook {plan['notebook_calls']}  "
-        f"memory calls {plan['memory_decision_calls']}  nomem calls {plan['nomem_decision_calls']}  "
-        f"({plan['calls_per_decision']} per decision)  "
-        f"rule/buy-and-hold/cash model calls {plan['rule_buyhold_cash_calls']}",
+        f"model calls {plan['llm_calls']}: propose {plan['propose_calls']}  notebook {plan['notebook_calls']}  "
+        f"memory {plan['memory_decision_calls']}  nomem {plan['nomem_decision_calls']}  "
+        f"rule/buy-and-hold/cash {plan['rule_buyhold_cash_calls']}  (repeats {plan['repeats']}, "
+        f"{plan['explore_rounds_each']} explore rounds per month, LLM concurrency {plan['llm_concurrency']})",
         flush=True,
     )
     print(
@@ -561,9 +524,17 @@ def print_plan(plan: dict) -> None:
         flush=True,
     )
     print(
-        f"estimated model wall {plan['estimated_wall_seconds'] / 60:.1f} min "
-        f"at {plan['seconds_per_call']}s per call and concurrency {plan['llm_concurrency']} "
-        f"(rule backtests are local and not in this figure)",
+        f"wall estimate: feature views {plan['estimated_feature_seconds'] / 60:.1f} min "
+        f"({plan['feature_days']} views at {plan['seconds_per_feature_day']}s)  "
+        f"propose {plan['estimated_propose_seconds'] / 60:.1f} min  "
+        f"explore backtests {plan['estimated_backtest_seconds'] / 60:.1f} min  "
+        f"test-arm model calls {plan['estimated_test_model_seconds'] / 60:.1f} min",
+        flush=True,
+    )
+    print(
+        f"estimated total {plan['estimated_total_seconds'] / 60:.1f} min; "
+        f"with feature views cached across rounds ({plan['unique_feature_days']} distinct sessions) "
+        f"{plan['estimated_total_cached_seconds'] / 60:.1f} min",
         flush=True,
     )
 
@@ -645,13 +616,16 @@ def write_charts(directory: Path, rows: list[dict]) -> None:
 
 
 def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symbols: list[str], spec: dict,
-                notes: str, rounds: int, specs_per_round: int, workers: int) -> tuple[str, str, list[dict]]:
-    """Return the notebook body, its id, and every explore row including buy-and-hold."""
+                notes: str, rounds: int, specs_per_round: int, workers: int,
+                track: list[dict] | None = None) -> tuple[dict, list[dict]]:
+    """Return the structured notebook and every explore row including buy-and-hold."""
     start, end = spec["explore_start"], spec["explore_end"]
     round_id = spec["round"]
     notebook_id = ""
     body = notes
+    nb: dict = {}
     rows: list[dict] = []
+    specs: dict[str, dict] = {}
     bench_cfg = run_config(start, end, symbols, f"{round_id}-bench", f"bench_{round_id}_{uuid.uuid4().hex[:6]}")
     print(f"explore {start}..{end} buy-and-hold", flush=True)
     bench = _run_one(
@@ -669,6 +643,7 @@ def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symb
         jobs = []
         for index, rule in enumerate(proposed, 1):
             _spec_dump(out, rule)
+            specs[rule.spec_id] = rule.model_dump()
             cfg = run_config(start, end, symbols, rule.name, f"ex_{round_id}_r{round_index}_{index:02d}_{uuid.uuid4().hex[:4]}")
             jobs.append((rule, cfg))
 
@@ -690,28 +665,21 @@ def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symb
         with ThreadPoolExecutor(max_workers=workers) as pool:
             round_rows = list(pool.map(one, jobs))
         rows.extend(round_rows)
-        sample = {
-            "explore_start": start,
-            "explore_end": end,
-            "test_start": spec["test_start"],
-            "n_days": len(times),
-            "n_specs": len(round_rows),
-        }
         notebook_id = f"nb-{round_id}-r{round_index}-{uuid.uuid4().hex[:4]}"
-        body = write_findings(runtime, body, round_rows + [bench], sample)
-        directory = out / "notebooks"
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{notebook_id}.md").write_text(f"id: {notebook_id}\nparent: {parent or ''}\n\n{body}", encoding="utf-8")
+        nb = write_notebook(out, store, symbols, spec, rows, bench, specs, len(times), track or [], notebook_id, parent)
+        body = nb["text"]
         _save(out, "notebook", {"notebook_id": notebook_id, "parent_id": parent, "round": round_id, "round_index": round_index})
         print(f"notebook {notebook_id} parent {parent or '-'}", flush=True)
     rows.append(bench)
-    return body, notebook_id, rows
+    return nb, rows
 
 
 def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any, symbols: list[str], spec: dict,
-             notes: str, notebook_id: str, best: dict, repeats: int, workers: int) -> list[dict]:
+             nb: dict, best: dict, repeats: int, workers: int) -> tuple[list[dict], list[dict]]:
+    """Return the test rows and the out-of-sample records of this round's top explore rules."""
     start, end = spec["test_start"], spec["test_end"]
-    test_notes = notes_for_test(notes)
+    notebook_id = nb["notebook_id"]
+    test_notes = notes_for_test(nb["text"])
     if leaks_test_window(test_notes, start):
         raise ValueError("test notebook contains a date from the test window")
     features = FeatureCache(source, symbols)
@@ -719,22 +687,29 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
     spec_payload = json.loads((out / "specs" / f"{best['spec_id']}.json").read_text(encoding="utf-8"))
     jobs: list[tuple[str, int, Any, str]] = []
     for repeat in range(1, repeats + 1):
-        memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="sql")
+        view = explore_notebook.rule_view(explore_notebook.playbook(nb), features, _targets, RuleRunner)
+        memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="sql", rule_view=view)
         nomem = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=source, recall="sql")
         jobs.append(("memory", repeat, memory, notebook_id))
         jobs.append(("nomem", repeat, nomem, ""))
     jobs.append(("best_rule", 1, RuleRunner(spec_payload, features), best["spec_id"]))
     jobs.append(("buy_and_hold", 1, AccumulatingBuyAndHold(), "buy_and_hold"))
     jobs.append(("cash", 1, CashOnlyAgent(), "cash"))
+    for entry in nb["top"]:
+        if entry["spec_id"] != best["spec_id"]:
+            jobs.append((f"oos_rank{entry['rank']}", 1, RuleRunner(entry["spec"], features), entry["spec_id"]))
 
     def one(job: tuple[str, int, Any, str]) -> dict:
         arm, repeat, agent, parent = job
         cfg = run_config(start, end, symbols, f"{spec['round']}-{arm}-{repeat}", f"te_{spec['round']}_{arm}_{repeat}_{uuid.uuid4().hex[:4]}")
         row = _run_one(
             agent, cfg, store,
-            phase="test", round_id=spec["round"], arm=arm, repeat=repeat,
+            phase="oos" if arm.startswith("oos_") else "test", round_id=spec["round"], arm=arm, repeat=repeat,
             start=start, end=end, spec_id=parent or arm, parent_id=notebook_id if arm == "memory" else parent,
         )
+        if isinstance(agent, NemotronTrader):
+            row.update(sql_stats(row.get("run_id") or ""))
+            row.update(rule_stats(row.get("run_id") or ""))
         _save(out, "result", row)
         print(
             f"test {arm}#{repeat} net {row.get('net_profit')} twr {row.get('twr')} "
@@ -747,7 +722,43 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
         return row
 
     with ThreadPoolExecutor(max_workers=max(workers, len(jobs))) as pool:
-        return list(pool.map(one, jobs))
+        rows = list(pool.map(one, jobs))
+    bench_row = next(row for row in rows if row["arm"] == "buy_and_hold")
+    records = []
+    for entry in nb["top"]:
+        arm = "best_rule" if entry["spec_id"] == best["spec_id"] else f"oos_rank{entry['rank']}"
+        row = next((item for item in rows if item["arm"] == arm and item.get("twr") is not None), None)
+        if row is not None and bench_row.get("twr") is not None:
+            records.append(explore_notebook.oos_record(spec["round"], start, end, entry, row, bench_row))
+    for record in records:
+        _save(out, "oos", record)
+    return rows, records
+
+
+def sql_stats(run_id: str) -> dict:
+    """Queries the agent sent and how many ran. A decision counts as answered when any of its queries ran."""
+    rows = explore_notebook.read_jsonl(SIM / "runs" / run_id / "queries.jsonl")
+    by_decision: dict[str, list[bool]] = {}
+    for row in rows:
+        by_decision.setdefault(str(row.get("request_id")), []).append(not row.get("error"))
+    return {
+        "sql_queries": len(rows),
+        "sql_ok": sum(1 for row in rows if not row.get("error")),
+        "sql_decisions": len(by_decision),
+        "sql_first_try_ok": sum(1 for oks in by_decision.values() if oks and oks[0]),
+        "sql_decisions_answered": sum(1 for oks in by_decision.values() if any(oks)),
+        "sql_repairs": sum(max(len(oks) - 1, 0) for oks in by_decision.values()),
+    }
+
+
+def rule_stats(run_id: str) -> dict:
+    rows = [row for row in explore_notebook.read_jsonl(SIM / "runs" / run_id / "rule_choices.jsonl") if "rule" in row]
+    if not rows:
+        return {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["rule"]] = counts.get(row["rule"], 0) + 1
+    return {"rule_counts": counts}
 
 
 def print_table(rows: list[dict]) -> None:
@@ -807,9 +818,13 @@ def main() -> None:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     store = SnapshotStore.load(SIM / "sim" / "snapshot")
-    explore_days = [len(decision_times(store, run_config(spec["explore_start"], spec["explore_end"], symbols, "dry", f"dry_e_{index}"))) for index, spec in enumerate(rounds)]
-    test_days = [len(decision_times(store, run_config(spec["test_start"], spec["test_end"], symbols, "dry", f"dry_t_{index}"))) for index, spec in enumerate(rounds)]
-    plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days, args.llm_concurrency)
+    explore_times = [decision_times(store, run_config(spec["explore_start"], spec["explore_end"], symbols, "dry", f"dry_e_{index}")) for index, spec in enumerate(rounds)]
+    test_times = [decision_times(store, run_config(spec["test_start"], spec["test_end"], symbols, "dry", f"dry_t_{index}")) for index, spec in enumerate(rounds)]
+    explore_days = [len(times) for times in explore_times]
+    test_days = [len(times) for times in test_times]
+    unique_days = len({moment for times in explore_times + test_times for moment in times})
+    plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days, args.llm_concurrency,
+                       args.specs, args.workers, unique_days)
     if args.dry_run:
         print_plan(plan)
         return
@@ -827,25 +842,43 @@ def main() -> None:
 
     planner = runtime_factory()
     notes = ""
+    track: list[dict] = []
     all_rows: list[dict] = []
     try:
         for spec in rounds:
             print(f"round {spec['round']} explore {spec['explore_start']}..{spec['explore_end']} test {spec['test_start']}..{spec['test_end']}", flush=True)
-            notes, notebook_id, explore_rows = run_explore(
-                out, store, source, planner, symbols, spec, notes, args.rounds, args.specs, args.workers,
+            nb, explore_rows = run_explore(
+                out, store, source, planner, symbols, spec, notes, args.rounds, args.specs, args.workers, track,
             )
+            notes = nb["text"]
             all_rows.extend(explore_rows)
             winner = best_explore(explore_rows)
             print(f"best explore spec {winner['spec_id']} net {winner.get('net_profit')}", flush=True)
-            all_rows.extend(run_test(
-                out, store, source, runtime_factory, symbols, spec, notes, notebook_id, winner, args.repeats, args.workers,
-            ))
+            test_rows, records = run_test(
+                out, store, source, runtime_factory, symbols, spec, nb, winner, args.repeats, args.workers,
+            )
+            all_rows.extend(test_rows)
+            track.extend(records)
+            print_sql(test_rows)
     finally:
         planner.close()
     write_csv(out / "results.csv", all_rows)
     write_charts(out / "charts", all_rows)
     print_table(all_rows)
     print(f"wrote {out / 'results.csv'}", flush=True)
+
+
+def print_sql(rows: list[dict]) -> None:
+    for row in rows:
+        if "sql_queries" not in row:
+            continue
+        print(
+            f"sql {row['arm']}#{row['repeat']}: {row['sql_ok']}/{row['sql_queries']} queries ran; "
+            f"first query ran on {row['sql_first_try_ok']}/{row['sql_decisions']} decisions; "
+            f"{row['sql_decisions_answered']}/{row['sql_decisions']} decisions got data; repairs {row['sql_repairs']}"
+            + (f"; rules {row['rule_counts']}" if row.get("rule_counts") else ""),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

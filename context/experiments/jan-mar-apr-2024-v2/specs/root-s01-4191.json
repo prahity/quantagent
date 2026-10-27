@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s01-4191",
+  "parent_id": null,
+  "name": "mom_21_top2",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 21,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 2,
+    "threshold": null
+  },
+  "target_weight": 0.3,
+  "cash_floor": 0.1,
+  "rebalance_every": 5,
+  "min_weight_change": 0.05,
+  "drawdown_cut": 0.12,
+  "origin": "model"
+}

@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s04-140f",
+  "parent_id": null,
+  "name": "meanrev_63_top1",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "mean_reversion",
+    "lookback": 63,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.4,
+  "cash_floor": 0.2,
+  "rebalance_every": 30,
+  "min_weight_change": 0.06,
+  "drawdown_cut": 0.08,
+  "origin": "model"
+}

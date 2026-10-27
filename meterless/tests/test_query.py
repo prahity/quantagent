@@ -111,6 +111,81 @@ def test_trader_binds_the_simulator_cutoff_and_drops_an_invented_figure(tmp_path
     assert logged_sql[0]["as_of"] == "2024-01-03T14:30:00Z"
 
 
+def test_a_failed_query_returns_the_columns_and_gets_one_repair(tmp_path):
+    source = SqliteSource.build(tmp_path / "market.sqlite", BARS, FILINGS)
+    prompts: list[str] = []
+    replies = iter([
+        json.dumps({"goal": "series", "sql": "SELECT ts, close FROM features ORDER BY ts"}),
+        json.dumps({"goal": "series", "sql": "SELECT ts, close FROM bars WHERE interval = 'daily' ORDER BY ts"}),
+        json.dumps({"orders": [], "reason": "hold"}),
+    ])
+
+    class Runtime:
+        def complete(self, content: str, max_tokens: int | None = None) -> str:
+            prompts.append(content)
+            return next(replies)
+
+    request = {
+        "run_id": "run", "request_id": "decision_00000", "mode": "V1", "as_of": "2024-01-03T14:30:00Z",
+        "window_start": "2024-01-03T14:30:00Z", "window_end": "2024-01-04T14:30:00Z",
+    }
+    trader = NemotronTrader(Runtime(), source=source, log_dir=tmp_path)
+    trader.decide(request)
+    assert "features: symbol, close, ret_5" in prompts[0]
+    assert "SELECT symbol, ts, close FROM bars WHERE interval = 'daily'" in prompts[0]
+    assert trader.queries[0].error
+    assert "SQL error:" in prompts[1] and "Available columns:" in prompts[1]
+    assert trader.queries[1].error == ""
+    assert len(prompts) == 3
+
+
+def test_memory_agent_names_a_notebook_rule_and_it_is_logged(tmp_path):
+    prompts: list[str] = []
+
+    class Runtime:
+        def complete(self, content: str, max_tokens: int | None = None) -> str:
+            prompts.append(content)
+            return json.dumps({"rule": "mom_21", "why_not": "", "orders": [], "reason": "rule holds today"})
+
+    def view(_request, _feed):
+        return [{"name": "mom_21", "confidence": "low", "excess_pp": 1.5, "targets": {"AAPL": 0.3},
+                 "orders": [], "why_orders": "between rebalances",
+                 "rebalance_every": 5, "rebalance_today": False, "drawdown_cut": 0.12, "oos_months": 0}]
+
+    request = {
+        "run_id": "run", "request_id": "decision_00001", "mode": "V1", "as_of": "2024-01-03T14:30:00Z", "step": 1,
+        "window_start": "2024-01-03T14:30:00Z", "window_end": "2024-01-04T14:30:00Z",
+        "account": {"cash": 10000, "equity": 10000, "positions": []},
+    }
+    trader = NemotronTrader(Runtime(), recall="notes", log_dir=tmp_path, rule_view=view)
+    action = trader.decide(request)
+    assert "rule" not in action
+    assert "mom_21: targets AAPL 30.0%, cash 70.0%" in prompts[0]
+    assert "rebalance today: no" in prompts[0]
+    assert "Orders today: [] (between rebalances)" in prompts[0]
+    assert '"rule":"<name or none>"' in prompts[0]
+    logged = json.loads((tmp_path / "rule_choices.jsonl").read_text().splitlines()[-1])
+    assert logged["rule"] == "mom_21" and logged["listed"] is True
+    assert logged["matches_rule_orders"] is True
+    assert logged["rule_targets"] == {"AAPL": 0.3}
+    assert logged["weights_before"] == {"cash": 1.0}
+
+
+def test_jdbc_errors_keep_the_engine_message_only():
+    from meterless.query import sql_error_text
+
+    raw = ("org.apache.hive.service.cli.HiveSQLException: com.zetaris.lightning.error.LightningException: "
+           "<<<[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `ts` cannot be resolved. "
+           "Did you mean one of the following? [`close`, `ret_5`].; line 1 pos 2537>>>")
+    assert sql_error_text(raw) == (
+        "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `ts` cannot be resolved. "
+        "Did you mean one of the following? [`close`, `ret_5`]"
+    )
+    planned = ("<<<[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `ts` cannot be resolved. "
+               "Did you mean one of the following? [`close`].; 'GlobalLimit 31 +- 'LocalLimit 31 +- 'Project [*]")
+    assert sql_error_text(planned).endswith("[`close`]")
+
+
 def test_structure_action_keeps_orders_and_fills_ids_from_the_request():
     request = {
         "run_id": "run_real", "request_id": "decision_00007", "mode": "V1",

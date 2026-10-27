@@ -1,0 +1,497 @@
+{
+  "notebook_id": "nb-2024-04-r1-4410",
+  "parent_id": null,
+  "round": "2024-04",
+  "explore_start": "2024-01-01",
+  "explore_end": "2024-03-31",
+  "sessions": 61,
+  "n_specs": 12,
+  "market": {
+    "symbols": {
+      "AAPL": {
+        "return_pct": -7.63,
+        "ann_vol_pct": 20.0,
+        "max_drawdown_pct": 13.41,
+        "sessions": 61
+      },
+      "MSFT": {
+        "return_pct": 13.44,
+        "ann_vol_pct": 19.1,
+        "max_drawdown_pct": 4.39,
+        "sessions": 61
+      },
+      "SPY": {
+        "return_pct": 10.67,
+        "ann_vol_pct": 11.0,
+        "max_drawdown_pct": 1.71,
+        "sessions": 61
+      }
+    },
+    "trend": "up",
+    "volatility": "normal",
+    "equal_weight_return_pct": 5.49,
+    "mean_ann_vol_pct": 16.7
+  },
+  "buy_and_hold": {
+    "twr": 1.63,
+    "max_drawdown": 10.85,
+    "avg_invested_pct": 90.0
+  },
+  "cash_twr": 1.22,
+  "top": [
+    {
+      "rank": 1,
+      "name": "mom_21_top2",
+      "spec_id": "root-s01-4191",
+      "params": {
+        "signal": "momentum",
+        "lookback": 21,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 2,
+        "threshold": null,
+        "target_weight": 0.3,
+        "cash_floor": 0.1,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.12,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s01-4191",
+        "parent_id": null,
+        "name": "mom_21_top2",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "momentum",
+          "lookback": 21,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 2,
+          "threshold": null
+        },
+        "target_weight": 0.3,
+        "cash_floor": 0.1,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.12,
+        "origin": "model"
+      },
+      "net_profit": 549.56,
+      "twr": 3.09,
+      "excess_pp": 1.46,
+      "max_drawdown": 2.22,
+      "turnover": 1.26,
+      "sharpe": 1.3,
+      "avg_invested_pct": 30.7,
+      "daily_excess_mean_pct": 0.0202,
+      "daily_excess_t": 0.21,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": 0.20851209898801149,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = 0.21, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      }
+    },
+    {
+      "rank": 2,
+      "name": "gap_up_top2",
+      "spec_id": "root-s07-f3bb",
+      "params": {
+        "signal": "momentum",
+        "lookback": 21,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 2,
+        "threshold": null,
+        "target_weight": 0.3,
+        "cash_floor": 0.05,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.13,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s07-f3bb",
+        "parent_id": null,
+        "name": "gap_up_top2",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "momentum",
+          "lookback": 21,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 2,
+          "threshold": null
+        },
+        "target_weight": 0.3,
+        "cash_floor": 0.05,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.13,
+        "origin": "model"
+      },
+      "net_profit": 549.56,
+      "twr": 3.09,
+      "excess_pp": 1.46,
+      "max_drawdown": 2.22,
+      "turnover": 1.26,
+      "sharpe": 1.3,
+      "avg_invested_pct": 30.7,
+      "daily_excess_mean_pct": 0.0202,
+      "daily_excess_t": 0.21,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": 0.20851209898801149,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = 0.21, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      }
+    },
+    {
+      "rank": 3,
+      "name": "gap_down_top2",
+      "spec_id": "root-s08-f45f",
+      "params": {
+        "signal": "momentum",
+        "lookback": 21,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 2,
+        "threshold": null,
+        "target_weight": 0.3,
+        "cash_floor": 0.05,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.13,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s08-f45f",
+        "parent_id": null,
+        "name": "gap_down_top2",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "momentum",
+          "lookback": 21,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 2,
+          "threshold": null
+        },
+        "target_weight": 0.3,
+        "cash_floor": 0.05,
+        "rebalance_every": 5,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.13,
+        "origin": "model"
+      },
+      "net_profit": 549.56,
+      "twr": 3.09,
+      "excess_pp": 1.46,
+      "max_drawdown": 2.22,
+      "turnover": 1.26,
+      "sharpe": 1.3,
+      "avg_invested_pct": 30.7,
+      "daily_excess_mean_pct": 0.0202,
+      "daily_excess_t": 0.21,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": 0.20851209898801149,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = 0.21, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      }
+    }
+  ],
+  "worst": [
+    {
+      "rank": 12,
+      "name": "meanrev_21_top2",
+      "spec_id": "root-s03-46c9",
+      "params": {
+        "signal": "mean_reversion",
+        "lookback": 21,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 2,
+        "threshold": null,
+        "target_weight": 0.35,
+        "cash_floor": 0.05,
+        "rebalance_every": 10,
+        "min_weight_change": 0.04,
+        "drawdown_cut": 0.1,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s03-46c9",
+        "parent_id": null,
+        "name": "meanrev_21_top2",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "mean_reversion",
+          "lookback": 21,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 2,
+          "threshold": null
+        },
+        "target_weight": 0.35,
+        "cash_floor": 0.05,
+        "rebalance_every": 10,
+        "min_weight_change": 0.04,
+        "drawdown_cut": 0.1,
+        "origin": "model"
+      },
+      "net_profit": -175.33,
+      "twr": -0.87,
+      "excess_pp": -2.51,
+      "max_drawdown": 6.34,
+      "turnover": 1.47,
+      "sharpe": -1.12,
+      "avg_invested_pct": 31.9,
+      "daily_excess_mean_pct": -0.0437,
+      "daily_excess_t": -0.54,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": -0.5358287008720153,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = -0.54, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      },
+      "why": [
+        "excess vs buy-and-hold -2.51 pp (TWR -0.87% vs 1.63%)",
+        "averaged 32% invested vs buy-and-hold 90%, so it missed most of the move",
+        "bet on reversals while the universe trended up +5.49%"
+      ]
+    },
+    {
+      "rank": 11,
+      "name": "vol_top2",
+      "spec_id": "root-s05-2a9c",
+      "params": {
+        "signal": "volatility",
+        "lookback": 21,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 2,
+        "threshold": null,
+        "target_weight": 0.25,
+        "cash_floor": 0.1,
+        "rebalance_every": 7,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.14,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s05-2a9c",
+        "parent_id": null,
+        "name": "vol_top2",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "volatility",
+          "lookback": 21,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 2,
+          "threshold": null
+        },
+        "target_weight": 0.25,
+        "cash_floor": 0.1,
+        "rebalance_every": 7,
+        "min_weight_change": 0.05,
+        "drawdown_cut": 0.14,
+        "origin": "model"
+      },
+      "net_profit": -156.42,
+      "twr": -0.76,
+      "excess_pp": -2.39,
+      "max_drawdown": 3.37,
+      "turnover": 2.53,
+      "sharpe": -1.81,
+      "avg_invested_pct": 23.1,
+      "daily_excess_mean_pct": -0.0425,
+      "daily_excess_t": -0.47,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": -0.46801734327992695,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = -0.47, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      },
+      "why": [
+        "excess vs buy-and-hold -2.39 pp (TWR -0.76% vs 1.63%)",
+        "averaged 23% invested vs buy-and-hold 90%, so it missed most of the move",
+        "turnover 2.53 vs median 1.26, paying slippage on each trade",
+        "ranked by low volatility, which ignores direction"
+      ]
+    },
+    {
+      "rank": 10,
+      "name": "relstr_top3",
+      "spec_id": "root-s06-3c0b",
+      "params": {
+        "signal": "relative_strength",
+        "lookback": 63,
+        "max_days_since_filing": null,
+        "selection": "top_n",
+        "top_n": 3,
+        "threshold": null,
+        "target_weight": 0.2,
+        "cash_floor": 0.1,
+        "rebalance_every": 5,
+        "min_weight_change": 0.03,
+        "drawdown_cut": 0.11,
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ]
+      },
+      "spec": {
+        "spec_id": "root-s06-3c0b",
+        "parent_id": null,
+        "name": "relstr_top3",
+        "universe": [
+          "AAPL",
+          "MSFT",
+          "SPY"
+        ],
+        "signal": {
+          "kind": "relative_strength",
+          "lookback": 63,
+          "max_days_since_filing": null,
+          "forms": []
+        },
+        "selection": {
+          "mode": "top_n",
+          "top_n": 3,
+          "threshold": null
+        },
+        "target_weight": 0.2,
+        "cash_floor": 0.1,
+        "rebalance_every": 5,
+        "min_weight_change": 0.03,
+        "drawdown_cut": 0.11,
+        "origin": "model"
+      },
+      "net_profit": 65.0,
+      "twr": 0.38,
+      "excess_pp": -1.25,
+      "max_drawdown": 4.15,
+      "turnover": 1.24,
+      "sharpe": -0.58,
+      "avg_invested_pct": 31.5,
+      "daily_excess_mean_pct": -0.0236,
+      "daily_excess_t": -0.28,
+      "daily_excess_n": 61,
+      "oos": [],
+      "confidence": {
+        "level": "low",
+        "t_stat": -0.2767527619639577,
+        "sessions": 61,
+        "n_specs": 12,
+        "oos_months": 0,
+        "oos_wins": 0,
+        "basis": "61 explore sessions, 12 rules tried, daily excess t = -0.28, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+      },
+      "why": [
+        "excess vs buy-and-hold -1.25 pp (TWR 0.38% vs 1.63%)",
+        "averaged 32% invested vs buy-and-hold 90%, so it missed most of the move"
+      ]
+    }
+  ],
+  "track_record": [],
+  "recommendation": {
+    "action": "apply_rule",
+    "rule": "mom_21_top2",
+    "spec_id": "root-s01-4191",
+    "confidence": {
+      "level": "low",
+      "t_stat": 0.20851209898801149,
+      "sessions": 61,
+      "n_specs": 12,
+      "oos_months": 0,
+      "oos_wins": 0,
+      "basis": "61 explore sessions, 12 rules tried, daily excess t = 0.21, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+    },
+    "instruction": "Apply mom_21_top2 at its own weights and no larger. Use gap_up_top2 only on a day mom_21_top2 has no signal (null features). The explore edge is not separable from luck at this sample size, so do not add to it."
+  },
+  "text": "Notebook nb-2024-04-r1-4410 (parent -). Explore 2024-01-01 to 2024-03-31, 61 sessions, 12 rules tested.\n\nMarket in the explore window:\n- trend up (equal-weight 5.49%), volatility normal (mean 16.7% annualized)\n- AAPL: -7.63%, vol 20.0%, max drawdown 13.41%\n- MSFT: +13.44%, vol 19.1%, max drawdown 4.39%\n- SPY: +10.67%, vol 11.0%, max drawdown 1.71%\n- buy-and-hold TWR 1.63%, drawdown 10.85%. Cash TWR 1.22%.\n\nTop rules (explore window):\n1. mom_21_top2 [root-s01-4191]: momentum lookback 21, top 2, 30% each, cash floor 10%, rebalance every 5 sessions, min weight change 5%, drawdown cut 12%, universe AAPL,MSFT,SPY. TWR 3.09%, excess +1.46 pp vs buy-and-hold, drawdown 2.22%, turnover 1.26, avg invested 30.7%, daily excess t 0.21, no out-of-sample record. Confidence low.\n2. gap_up_top2 [root-s07-f3bb]: momentum lookback 21, top 2, 30% each, cash floor 5%, rebalance every 5 sessions, min weight change 5%, drawdown cut 13%, universe AAPL,MSFT,SPY. TWR 3.09%, excess +1.46 pp vs buy-and-hold, drawdown 2.22%, turnover 1.26, avg invested 30.7%, daily excess t 0.21, no out-of-sample record. Confidence low.\n3. gap_down_top2 [root-s08-f45f]: momentum lookback 21, top 2, 30% each, cash floor 5%, rebalance every 5 sessions, min weight change 5%, drawdown cut 13%, universe AAPL,MSFT,SPY. TWR 3.09%, excess +1.46 pp vs buy-and-hold, drawdown 2.22%, turnover 1.26, avg invested 30.7%, daily excess t 0.21, no out-of-sample record. Confidence low.\n\nWorst rules and why:\n12. meanrev_21_top2 [root-s03-46c9]: mean_reversion lookback 21, top 2, 35% each, cash floor 5%, rebalance every 10 sessions, min weight change 4%, drawdown cut 10%, universe AAPL,MSFT,SPY. TWR -0.87%, excess -2.51 pp vs buy-and-hold, drawdown 6.34%, turnover 1.47, avg invested 31.9%, daily excess t -0.54, no out-of-sample record. Confidence low.\n  why: excess vs buy-and-hold -2.51 pp (TWR -0.87% vs 1.63%); averaged 32% invested vs buy-and-hold 90%, so it missed most of the move; bet on reversals while the universe trended up +5.49%\n11. vol_top2 [root-s05-2a9c]: volatility lookback 21, top 2, 25% each, cash floor 10%, rebalance every 7 sessions, min weight change 5%, drawdown cut 14%, universe AAPL,MSFT,SPY. TWR -0.76%, excess -2.39 pp vs buy-and-hold, drawdown 3.37%, turnover 2.53, avg invested 23.1%, daily excess t -0.47, no out-of-sample record. Confidence low.\n  why: excess vs buy-and-hold -2.39 pp (TWR -0.76% vs 1.63%); averaged 23% invested vs buy-and-hold 90%, so it missed most of the move; turnover 2.53 vs median 1.26, paying slippage on each trade; ranked by low volatility, which ignores direction\n10. relstr_top3 [root-s06-3c0b]: relative_strength lookback 63, top 3, 20% each, cash floor 10%, rebalance every 5 sessions, min weight change 3%, drawdown cut 11%, universe AAPL,MSFT,SPY. TWR 0.38%, excess -1.25 pp vs buy-and-hold, drawdown 4.15%, turnover 1.24, avg invested 31.5%, daily excess t -0.28, no out-of-sample record. Confidence low.\n  why: excess vs buy-and-hold -1.25 pp (TWR 0.38% vs 1.63%); averaged 32% invested vs buy-and-hold 90%, so it missed most of the move\n\nOut-of-sample record (test months finished before this test month):\n- none yet. This is the first test month, so no rule has an out-of-sample result.\n\nWhat to do: Apply mom_21_top2 at its own weights and no larger. Use gap_up_top2 only on a day mom_21_top2 has no signal (null features). The explore edge is not separable from luck at this sample size, so do not add to it.\nConfidence: LOW. 61 explore sessions, 12 rules tried, daily excess t = 0.21, 0 finished out-of-sample months (0 beat buy-and-hold). high needs t >= 2.5 and >= 3 out-of-sample months with 2/3 beating buy-and-hold; medium needs t >= 2.5, or t >= 1.5 with every out-of-sample month (at least 2) beating buy-and-hold."
+}

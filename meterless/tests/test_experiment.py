@@ -112,23 +112,145 @@ def test_test_notebook_has_no_test_window():
     assert experiment.notes_for_test(explore) == explore
     assert experiment.leaks_test_window(explore, "2024-02-01") is False
     assert experiment.leaks_test_window(explore + " 2024-02-01", "2024-02-01") is True
-    sample = {"explore_start": "2024-01-01", "explore_end": "2024-01-31", "test_start": "2024-02-01", "n_days": 21, "n_specs": 2}
-    rows = [
-        {"arm": "explore", "spec_id": "root-s01", "window_end": "2024-01-31", "net_profit": 12.5, "twr": 1.2, "max_drawdown": 0.4, "turnover": 0.1, "excess": 0.2},
-        {"arm": "explore", "spec_id": "root-s02", "window_end": "2024-01-31", "net_profit": -3.0, "twr": -0.4, "max_drawdown": 1.1, "turnover": 0.2, "excess": -1.0},
-    ]
+    rows = [{"arm": "explore", "spec_id": "root-s01", "window_end": "2024-01-31", "net_profit": 12.5}]
     experiment.assert_rows_before(rows, "2024-02-01")
     with pytest.raises(ValueError):
         experiment.assert_rows_before([{"window_end": "2024-02-01"}], "2024-02-01")
-    notes = experiment.mechanical_findings(rows, sample)
-    assert experiment.leaks_test_window(notes, "2024-02-01") is False
-    leaked = '{"findings":[{"text":"February 2024-02-03 worked","evidence":"12.5"}]}'
-    rendered = experiment.render_findings(leaked, "12.5 21 2", sample, rows)
-    assert "2024-02-03" not in rendered
-    assert experiment.leaks_test_window(rendered, "2024-02-01") is False
     with pytest.raises(ValueError):
         experiment.assert_allowed_years("2025-01-01", "2025-01-31", "")
     experiment.assert_allowed_years("2025-01-01", "2025-01-31", "validation")
+
+
+def _write_run(root, run_id: str, equities: list[float]) -> None:
+    import json
+
+    directory = root / run_id
+    directory.mkdir(parents=True)
+    days = [f"2024-01-{index + 2:02d}T14:30:00Z" for index in range(len(equities))]
+    (directory / "equity.jsonl").write_text(
+        "\n".join(json.dumps({"ts": day, "cash": value * 0.2, "equity": value}) for day, value in zip(days, equities)) + "\n")
+    (directory / "cash_events.jsonl").write_text("")
+
+
+class _Store:
+    def bars(self, interval, symbols, start, end):
+        import pandas as pd
+
+        rows = []
+        for offset in range(10):
+            ts = pd.Timestamp("2024-01-02", tz="UTC") + pd.Timedelta(days=offset)
+            rows.append({"symbol": "AAPL", "ts": ts, "close": 100 + offset})
+            rows.append({"symbol": "SPY", "ts": ts, "close": 100 - offset * 0.5})
+        frame = pd.DataFrame(rows)
+        return frame[(frame.ts >= start) & (frame.ts < end) & frame.symbol.isin(symbols)]
+
+
+def _spec(name: str, kind: str, lookback: int) -> dict:
+    spec = StrategySpec(name=name, universe=["AAPL", "SPY"], signal=Signal(kind=kind, lookback=lookback)).model_dump()
+    spec["spec_id"] = name
+    return spec
+
+
+def test_notebook_lists_top_and_worst_rules_with_parameters_and_confidence(tmp_path):
+    from meterless import explore_notebook
+
+    curves = {
+        "bench": [10000 + 10 * day for day in range(10)],
+        "a": [10000 + 30 * day for day in range(10)],
+        "b": [10000 + 20 * day + (5 if day % 2 else 0) for day in range(10)],
+        "c": [10000 + 12 * day for day in range(10)],
+        "d": [10000 - 5 * day for day in range(10)],
+        "e": [10000 - 10 * day for day in range(10)],
+        "f": [10000 - 20 * day for day in range(10)],
+    }
+    for run_id, values in curves.items():
+        _write_run(tmp_path, run_id, values)
+    kinds = {"a": ("momentum", 21), "b": ("momentum", 5), "c": ("relative_strength", 21),
+             "d": ("volatility", 21), "e": ("mean_reversion", 5), "f": ("mean_reversion", 21)}
+    specs = {name: _spec(name, *kind) for name, kind in kinds.items()}
+    profits = {"a": 270, "b": 185, "c": 108, "d": -45, "e": -90, "f": -180}
+    rows = [{"arm": "explore", "spec_id": name, "run_id": name, "window_end": "2024-01-31", "net_profit": profit,
+             "twr": profit / 100, "max_drawdown": 0.0 if profit > 0 else 1.8, "turnover": 0.5 if name != "f" else 3.0}
+            for name, profit in profits.items()]
+    bench = {"run_id": "bench", "twr": 0.9, "max_drawdown": 0.2}
+    earlier = explore_notebook.oos_record(
+        "2024-01", "2024-01-01", "2024-01-31",
+        {"name": "a", "spec_id": "old-a", "spec": specs["a"], "rank": 1},
+        {"twr": 1.0, "max_drawdown": 0.3, "net_profit": 90}, {"twr": 0.4},
+    )
+    unfinished = {**earlier, "test_month": "2024-02", "test_start": "2024-02-01", "test_end": "2024-02-29"}
+    nb = explore_notebook.build_notebook(
+        notebook_id="nb-1", parent_id=None, round_id="2024-02",
+        explore_start="2024-01-01", explore_end="2024-01-31", test_start="2024-02-01",
+        sessions=10, rows=rows, bench=bench, specs=specs,
+        market=explore_notebook.market_conditions(_Store(), ["AAPL", "SPY"], "2024-01-01", "2024-01-31"),
+        track=[earlier, unfinished], runs_dir=tmp_path, cash_annual_rate=0.05,
+    )
+    assert [item["name"] for item in nb["top"]] == ["a", "b", "c"]
+    assert [item["name"] for item in nb["worst"]] == ["f", "e", "d"]
+    assert nb["top"][0]["params"]["signal"] == "momentum" and nb["top"][0]["params"]["lookback"] == 21
+    assert nb["top"][0]["excess_pp"] == pytest.approx(1.8)
+    assert nb["worst"][0]["why"][0].startswith("excess vs buy-and-hold -2.70 pp")
+    assert any("turnover 3.00" in reason for reason in nb["worst"][0]["why"])
+    assert nb["track_record"] == [earlier]
+    assert nb["top"][0]["oos"] == [earlier]
+    assert nb["market"]["symbols"]["AAPL"]["return_pct"] == pytest.approx(9.0)
+    assert nb["market"]["trend"] == "up"
+    rec = nb["recommendation"]
+    assert rec["action"] == "apply_rule" and rec["rule"] == "a"
+    assert rec["confidence"]["level"] in ("low", "medium", "high")
+    text = explore_notebook.render_notebook(nb)
+    assert "small sample" not in text.lower()
+    assert "What to do: " in text and "Confidence: " in text
+    assert "10 explore sessions, 6 rules tried" in text
+    assert "momentum lookback 21, top 2" in text
+    assert experiment.leaks_test_window(text, "2024-02-01") is False
+
+    for run_id in ("a", "b"):
+        (tmp_path / run_id / "fills.jsonl").write_text('{"filled_at": "2024-01-03", "side": "BUY", "symbol": "AAPL", "quantity": 3}\n')
+    merged = explore_notebook.build_notebook(
+        notebook_id="nb-2", parent_id=None, round_id="2024-02",
+        explore_start="2024-01-01", explore_end="2024-01-31", test_start="2024-02-01",
+        sessions=10, rows=rows, bench=bench, specs=specs, market=nb["market"],
+        track=[], runs_dir=tmp_path, cash_annual_rate=0.05,
+    )
+    assert [item["name"] for item in merged["top"]] == ["a", "c", "d"]
+    assert merged["top"][0]["same_trades_as"] == ["b"]
+    assert merged["n_specs"] == 6 and merged["n_distinct"] == 5
+
+
+def test_propose_repairs_a_missing_brace_and_a_dangling_key():
+    import json
+
+    rule = '"universe":["AAPL"],"signal":{"kind":"momentum","lookback":21},"selection":{"mode":"top_n","top_n":1},"target_weight":0.3,"cash_floor":0.1,"rebalance_every":5,"min_weight_change":0.05,"drawdown_cut":0.12'
+    missing = '{"strategies":[{"name":"a",' + rule + '},"name":"b",' + rule + '}]}'
+    dangling = '{"strategies":[{"name":"a",' + rule + '},"description":"x"},{"name":"b",' + rule + '}]}'
+    for broken in (missing, dangling):
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(broken)
+        names = [item["name"] for item in json.loads(experiment._repair_strategies(broken))["strategies"]]
+        assert names == ["a", "b"]
+
+    replies = iter([missing, "not json"])
+
+    class Runtime:
+        def complete(self, _content, max_tokens=None):
+            return next(replies)
+
+    specs = experiment.propose_specs(Runtime(), "", ["AAPL", "MSFT"], 2, None)
+    assert [spec.name for spec in specs] == ["a", "b"]
+    assert all(spec.origin == "model" for spec in specs)
+
+
+def test_confidence_needs_out_of_sample_wins_for_high():
+    from meterless.explore_notebook import confidence
+
+    assert confidence(3.0, 61, 12, [])["level"] == "medium"
+    assert confidence(1.0, 61, 12, [])["level"] == "low"
+    wins = [{"excess_pp": 1.0}] * 3
+    assert confidence(3.0, 61, 12, wins)["level"] == "high"
+    assert confidence(1.6, 61, 12, wins[:2])["level"] == "medium"
+    assert confidence(1.6, 61, 12, [{"excess_pp": 1.0}, {"excess_pp": -1.0}])["level"] == "low"
 
 
 def test_accounts_are_isolated():
