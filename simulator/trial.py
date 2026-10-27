@@ -27,6 +27,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
@@ -196,12 +197,22 @@ def main() -> None:
         done = {(r["arm"], r["month"]) for r in map(json.loads, (out / "results.jsonl").read_text().splitlines())}
 
     settings = load_settings()
+    pinned = settings["model"] if settings["model"] not in ("", "meterless/auto") else args.model
     periods = one_window(args.start, args.days) if args.days else months(args.first, args.last)
 
     extra = {} if args.thinking == "on" else {"chat_template_kwargs": {"enable_thinking": False}}
 
     def runtime() -> MeterlessRuntime:
-        return MeterlessRuntime(settings["base_url"], settings[TOKEN_SETTING], args.model, extra_body=extra)
+        return MeterlessRuntime(settings["base_url"], settings[TOKEN_SETTING], pinned, extra_body=extra)
+
+    def write_provider(run_id: str) -> None:
+        path = ROOT / "runs" / run_id / "provider.json"
+        path.write_text(json.dumps({
+            "provider": "meterless",
+            "model": pinned,
+            "base_host": urlparse(settings["base_url"]).netloc,
+            "thinking": args.thinking,
+        }, indent=2) + "\n", encoding="utf-8")
 
     def config(month: str, start: str, end: str, arm: str) -> dict:
         return {"interval": "daily", "mode": "V1", "start": start, "end": end, "initial_cash": args.cash,
@@ -229,7 +240,7 @@ def main() -> None:
     def row(arm: str, month: str, report: dict, b: dict, **extra) -> dict:
         twr = report["time_weighted_return_pct"]
         bench_twr = b["time_weighted_return_pct"]
-        return {"arm": arm, "month": month, "model": args.model, "thinking": args.thinking, **{k: report[k] for k in METRICS},
+        return {"arm": arm, "month": month, "model": pinned, "thinking": args.thinking, **{k: report[k] for k in METRICS},
                 "bench_return_pct": b["return_pct"], "bench_twr_pct": bench_twr,
                 "excess_pct": twr - bench_twr,
                 "daily_cash": report.get("daily_cash") or [],
@@ -241,7 +252,8 @@ def main() -> None:
         month, start, end = spec
         cfg = config(month, start, end, "nomem")
         report, _ = simulate(NemotronTrader(runtime(), memory=0, retries=args.retries, prompt_style=args.prompt_style), cfg)
-        record(out, row("nomem", month, report, bench(month, start, end), prompt_style=args.prompt_style))
+        write_provider(report["run_id"])
+        record(out, row("nomem", month, report, bench(month, start, end), provider="meterless", prompt_style=args.prompt_style))
 
     def memory_arm(analysis) -> None:
         seed_path = Path(args.seed_notes) if args.seed_notes else None
@@ -263,6 +275,7 @@ def main() -> None:
                 prompt_style=args.prompt_style,
             )
             report, service = simulate(agent, cfg)
+            write_provider(report["run_id"])
             b = bench(month, start, end)
             period = period_record(report, b, service, cfg)
             with _write_lock, (out / "queries.jsonl").open("a") as fh:
@@ -283,6 +296,7 @@ def main() -> None:
                 path.write_text(revised)
             record(out, row(
                 "memory", month, report, b,
+                provider="meterless",
                 notebook_chars_used=len(notes),
                 recall=args.recall,
                 prompt_style=args.prompt_style,
@@ -299,6 +313,8 @@ def main() -> None:
         bench(month, start, end)
     arms = args.arms.split(",")
     analysis = open_analysis_source(snapshot_dir=ROOT / "sim" / "snapshot") if "memory" in arms and args.recall != "notes" else None
+    if analysis is not None:
+        analysis.feature_symbols = [part.strip() for part in args.symbols.split(",") if part.strip()]
     threads = []
     if "memory" in arms:
         threads.append(threading.Thread(target=memory_arm, args=(analysis,)))

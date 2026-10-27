@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
@@ -21,6 +22,10 @@ TOKEN_SETTING = "meterless_runtime_token"
 DETECT_PORTS = (8088, 8090, 8787, 11434)
 DETECT_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHAT_TIMEOUT = 180.0
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+_METERLESS_ENV = ("METERLESS_BASE_URL", "METERLESS_RUNTIME_TOKEN", "METERLESS_MODEL")
+_HEADER_SKIP = ("auth", "cookie", "token", "secret", "password")
+_HEADER_KEEP = ("model", "route", "routing", "upstream", "provider", "backend", "served")
 
 
 def _elapsed_ms(started: float) -> float:
@@ -86,7 +91,26 @@ def parse_connect_link(text: str) -> dict[str, str] | None:
     }
 
 
+def apply_meterless_dotenv(path: Path | None = None, environ: dict[str, str] | None = None) -> None:
+    """Copy ``METERLESS_*`` from ``.env``. The file wins over a stale process value."""
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return
+    env_path = _ENV_PATH if path is None else path
+    if not env_path.is_file():
+        return
+    values = dotenv_values(env_path)
+    env = os.environ if environ is None else environ
+    for key in _METERLESS_ENV:
+        value = values.get(key)
+        if value:
+            env[key] = value
+
+
 def load_settings(environ: dict[str, str] | None = None) -> dict[str, str]:
+    if environ is None:
+        apply_meterless_dotenv()
     env = os.environ if environ is None else environ
     return {
         "base_url": normalize_base_url(env.get("METERLESS_BASE_URL") or DEFAULT_BASE_URL),
@@ -106,6 +130,11 @@ class CompletionRecord:
     completion_tokens: int | None
     total_tokens: int | None
     error: str | None = None
+    reported_model: str | None = None
+    endpoint_host: str | None = None
+    route: dict[str, Any] | None = None
+    routing_headers: dict[str, str] | None = None
+    reasoning: bool = False
 
 
 @dataclass
@@ -114,6 +143,46 @@ class Probe:
     base_url: str
     models: list[str]
     detail: str = ""
+
+
+def _routing_headers(headers: Any) -> dict[str, str]:
+    kept: dict[str, str] = {}
+    for key, value in headers.items():
+        low = key.lower()
+        if any(part in low for part in _HEADER_SKIP):
+            continue
+        if low.startswith("x-") or any(part in low for part in _HEADER_KEEP):
+            kept[key] = value
+    return kept
+
+
+def _route_summary(payload: Any) -> dict[str, Any]:
+    """The Nightshift receipt says which model was requested, served, and selected."""
+    meterless = payload.get("meterless") if isinstance(payload, dict) else None
+    if not isinstance(meterless, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in ("requested_model", "provider_model", "routed_model"):
+        value = meterless.get(key)
+        if isinstance(value, str):
+            summary[key] = value
+    winning = meterless.get("winning_route")
+    if isinstance(winning, dict):
+        route = {
+            key: winning[key]
+            for key in ("model", "label", "provider", "kind")
+            if isinstance(winning.get(key), str)
+        }
+        if route:
+            summary["winning_route"] = route
+    return summary
+
+
+def _reasoning_present(choice: dict) -> bool:
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict):
+        return False
+    return bool(message.get("reasoning_content") or message.get("reasoning") or choice.get("reasoning_content"))
 
 
 def _meterless_ids(payload: Any) -> list[str]:
@@ -140,6 +209,38 @@ class MeterlessRuntime:
         self._client = client or httpx.Client(timeout=CHAT_TIMEOUT)
         self._owns_client = client is None
         self.last_completion: CompletionRecord | None = None
+
+    def _endpoint_host(self) -> str:
+        return urlparse(self.base_url).netloc
+
+    def _remember(
+        self,
+        status: int | None,
+        elapsed: float,
+        finish_reason: str | None,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        total_tokens: int | None,
+        error: str | None,
+        reported_model: str | None = None,
+        route: dict[str, Any] | None = None,
+        routing_headers: dict[str, str] | None = None,
+        reasoning: bool = False,
+    ) -> None:
+        self.last_completion = CompletionRecord(
+            status,
+            elapsed,
+            finish_reason,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            error,
+            reported_model,
+            self._endpoint_host(),
+            route or {},
+            routing_headers or {},
+            reasoning,
+        )
 
     def close(self) -> None:
         if self._owns_client:
@@ -197,23 +298,30 @@ class MeterlessRuntime:
                 timeout=CHAT_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            self.last_completion = CompletionRecord(None, _elapsed_ms(started), None, None, None, None, type(exc).__name__)
+            self._remember(None, _elapsed_ms(started), None, None, None, None, type(exc).__name__)
             raise ProviderError("offline", "runtime did not answer") from exc
         elapsed = _elapsed_ms(started)
+        headers = _routing_headers(response.headers)
         if response.status_code in (401, 403):
-            self.last_completion = CompletionRecord(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}")
+            self._remember(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}", routing_headers=headers)
             raise ProviderError("unauthorized", "runtime rejected the token")
         if response.status_code != 200:
-            self.last_completion = CompletionRecord(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}")
+            self._remember(response.status_code, elapsed, None, None, None, None, f"HTTP {response.status_code}", routing_headers=headers)
             raise ProviderError("offline", f"runtime returned HTTP {response.status_code}")
         payload = response.json()
         choice = payload["choices"][0]
         message = choice["message"]["content"]
+        reported = payload.get("model") if isinstance(payload.get("model"), str) else None
+        route = _route_summary(payload)
+        reasoning = _reasoning_present(choice)
         if not isinstance(message, str):
-            self.last_completion = CompletionRecord(response.status_code, elapsed, choice.get("finish_reason"), None, None, None, "content was not a string")
+            self._remember(
+                response.status_code, elapsed, choice.get("finish_reason"), None, None, None,
+                "content was not a string", reported, route, headers, reasoning,
+            )
             raise ProviderError("offline", "runtime content was not a string")
         usage = payload.get("usage") or {}
-        self.last_completion = CompletionRecord(
+        self._remember(
             response.status_code,
             elapsed,
             choice.get("finish_reason"),
@@ -221,6 +329,10 @@ class MeterlessRuntime:
             usage.get("completion_tokens"),
             usage.get("total_tokens"),
             None,
+            reported,
+            route,
+            headers,
+            reasoning,
         )
         return message
 

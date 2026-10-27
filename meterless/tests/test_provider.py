@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from meterless.provider import (
     MeterlessRuntime,
+    apply_meterless_dotenv,
     auto_detect,
+    load_settings,
     normalize_base_url,
     parse_connect_link,
 )
@@ -88,6 +91,71 @@ def test_chat_sends_a_string_and_returns_a_string():
 
     runtime = MeterlessRuntime("http://127.0.0.1:8088/v1", "real", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert runtime.complete("Reply with one sentence.") == "confirmed"
+
+
+def test_chat_records_the_served_model_and_forwards_thinking_off():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        return httpx.Response(
+            200,
+            headers={"x-upstream-model": "nvidia/nemotron-3.5-lightning-30b-a3b", "Authorization": "Bearer hidden"},
+            json={
+                "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                "meterless": {
+                    "requested_model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                    "provider_model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                    "routed_model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                    "winning_route": {
+                        "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                        "label": "Nemotron 3.5 Lightning 30B A3B",
+                        "provider": "nvidia",
+                        "kind": "cloud",
+                    },
+                    "usage": {"input_tokens": 99},
+                },
+            },
+        )
+
+    runtime = MeterlessRuntime(
+        "http://127.0.0.1:8088/v1",
+        "real",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert runtime.complete("Reply with the single word ok.") == "ok"
+    recorded = runtime.last_completion
+    assert recorded is not None
+    assert recorded.finish_reason == "stop"
+    assert recorded.reasoning is False
+    assert recorded.reported_model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert recorded.endpoint_host == "127.0.0.1:8088"
+    assert recorded.routing_headers == {"x-upstream-model": "nvidia/nemotron-3.5-lightning-30b-a3b"}
+    assert recorded.route["winning_route"]["label"] == "Nemotron 3.5 Lightning 30B A3B"
+    assert "usage" not in recorded.route
+
+
+def test_dotenv_meterless_values_replace_a_stale_process_url(tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "METERLESS_BASE_URL=http://127.0.0.1:8088/v1\n"
+        "METERLESS_RUNTIME_TOKEN=rt-from-file\n"
+        "METERLESS_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b\n",
+        encoding="utf-8",
+    )
+    environ = {
+        "METERLESS_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "METERLESS_RUNTIME_TOKEN": "stale-cloud-key",
+        "METERLESS_MODEL": "other",
+    }
+    apply_meterless_dotenv(env_file, environ)
+    settings = load_settings(environ)
+    assert settings["base_url"] == "http://127.0.0.1:8088/v1"
+    assert settings["meterless_runtime_token"] == "rt-from-file"
+    assert settings["model"] == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_auto_detect_skips_a_dead_port_and_keeps_an_unauthorized_runtime():

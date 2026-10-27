@@ -258,6 +258,11 @@ class NemotronTrader:
             "prompt_tokens": getattr(recorded, "prompt_tokens", None),
             "completion_tokens": getattr(recorded, "completion_tokens", None),
             "total_tokens": getattr(recorded, "total_tokens", None),
+            "reported_model": getattr(recorded, "reported_model", None),
+            "endpoint_host": getattr(recorded, "endpoint_host", None),
+            "route": getattr(recorded, "route", None) or {},
+            "routing_headers": getattr(recorded, "routing_headers", None) or {},
+            "reasoning": bool(getattr(recorded, "reasoning", False)),
             "error": error or getattr(recorded, "error", None),
         })
 
