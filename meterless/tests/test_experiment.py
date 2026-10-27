@@ -240,6 +240,101 @@ def test_propose_repairs_a_missing_brace_and_a_dangling_key():
     specs = experiment.propose_specs(Runtime(), "", ["AAPL", "MSFT"], 2, None)
     assert [spec.name for spec in specs] == ["a", "b"]
     assert all(spec.origin == "model" for spec in specs)
+    assert experiment.propose_specs.last_calls == 1
+
+    replies = iter([missing, "x", "x"])
+    specs = experiment.propose_specs(Runtime(), "", ["AAPL", "MSFT"], 4, None)
+    assert [spec.origin for spec in specs] == ["model", "model", "fallback", "fallback"]
+
+    class Broken:
+        def complete(self, _content, max_tokens=None):
+            return "not json"
+
+    specs = experiment.propose_specs(Broken(), "", ["AAPL", "MSFT"], 3, None)
+    assert [spec.origin for spec in specs] == ["fallback"] * 3
+    assert experiment.propose_specs.last_calls == experiment._PROPOSE_ATTEMPTS
+
+
+def test_feature_cache_is_shared_saved_per_version_and_returns_identical_rows(tmp_path):
+    source = SqliteSource.build(tmp_path / "lake.sqlite", _bars(), _filings())
+    times = ["2024-01-25T14:30:00Z", "2024-02-01T14:30:00+00:00"]
+    direct = [load_features(source, as_of, ["AAPL"]) for as_of in times]
+    path = experiment.feature_cache_path("sqlite", "snap-a", ["AAPL"]).relative_to(experiment.REPO)
+    path = tmp_path / path
+
+    first = experiment.FeatureCache(source, ["AAPL"], path)
+    first.prefetch(times)
+    assert first.fetched == 2
+    assert [first(as_of) for as_of in times] == direct
+    assert first.hits == 2
+
+    class NoLake:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("a cached session went back to the lake")
+
+    second = experiment.FeatureCache(NoLake(), ["AAPL"], path)
+    assert second.loaded == 2
+    second.prefetch(times)
+    assert second.fetched == 0
+    assert [second("2024-01-25T14:30:00Z"), second("2024-02-01T14:30:00Z")] == direct
+
+    other = tmp_path / experiment.feature_cache_path("sqlite", "snap-b", ["AAPL"]).relative_to(experiment.REPO)
+    assert other != path
+    assert experiment.FeatureCache(source, ["AAPL"], other).loaded == 0
+
+
+def test_feature_cache_keeps_a_failed_view_out_of_the_file(tmp_path, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("lake down")
+
+    monkeypatch.setattr(experiment, "load_features", boom)
+    path = tmp_path / "cache.jsonl"
+    cache = experiment.FeatureCache(None, ["AAPL"], path)
+    assert cache("2024-01-25T14:30:00Z") == []
+    assert cache.errors == ["lake down"]
+    assert not path.exists()
+
+
+def test_resume_restores_finished_rounds_and_refuses_changed_settings(tmp_path):
+    rounds = experiment.rolling_rounds(2024)[:3]
+    config = {"symbols": ["AAPL"], "rounds": [spec["round"] for spec in rounds], "explore_rounds": 3,
+              "specs": 12, "repeats": 2, "model": "m", "thinking": "off", "data_version": "snap-a"}
+    experiment.check_run_config(tmp_path, config, resume=False)
+    nb = {"notebook_id": "nb-1", "text": "notebook one"}
+    rows = [{"round": rounds[0]["round"], "phase": "test", "arm": "memory", "net_profit": 1.5}]
+    records = [{"spec_id": "s1", "excess_pp": 0.4}]
+    proposals = [{"round": rounds[0]["round"], "explore_round": 1, "nemotron": 10, "fallback": 2, "propose_calls": 2}]
+    experiment.save_round(tmp_path, rounds[0], nb, rows, records, proposals, 12.0)
+    experiment.save_round(tmp_path, rounds[2], nb, rows, records, proposals, 12.0)
+
+    finished = experiment.load_finished_rounds(tmp_path, rounds)
+    assert [item["round"] for item in finished] == [rounds[0]["round"]]
+    assert finished[0]["notebook_text"] == "notebook one"
+    assert finished[0]["rows"] == rows and finished[0]["records"] == records
+    assert finished[0]["proposals"] == proposals
+
+    with pytest.raises(SystemExit):
+        experiment.check_run_config(tmp_path, config, resume=False)
+    with pytest.raises(SystemExit):
+        experiment.check_run_config(tmp_path, {**config, "repeats": 3}, resume=True)
+    experiment.check_run_config(tmp_path, config, resume=True)
+
+    experiment.write_proposals(tmp_path / "proposals.csv", proposals)
+    text = (tmp_path / "proposals.csv").read_text(encoding="utf-8").splitlines()
+    assert text == ["round,explore_round,nemotron,fallback,propose_calls", f"{rounds[0]['round']},1,10,2,2"]
+
+
+def test_progress_log_has_round_phase_and_elapsed(tmp_path):
+    import json
+
+    progress = experiment.Progress(tmp_path / "progress.jsonl")
+    with progress.phase("2024-04", "propose", explore_round=1) as info:
+        info["nemotron"] = 12
+    lines = [json.loads(line) for line in (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(line["round"], line["phase"], line["status"]) for line in lines] == [
+        ("2024-04", "propose", "start"), ("2024-04", "propose", "done"),
+    ]
+    assert lines[1]["nemotron"] == 12 and "seconds" in lines[1] and "elapsed_s" in lines[1]
 
 
 def test_confidence_needs_out_of_sample_wins_for_high():

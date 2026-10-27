@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -64,8 +65,10 @@ _ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash")
 _CSV_FIELDS = [
     "round", "phase", "arm", "repeat", "window_start", "window_end", "spec_id", "parent_id", "run_id",
     "net_profit", "twr", "max_drawdown", "sharpe", "turnover", "fills", "rejections",
-    "tokens", "cost", "wall_time",
+    "tokens", "cost", "wall_time", "name", "origin",
 ]
+_PROPOSAL_FIELDS = ["round", "explore_round", "nemotron", "fallback", "propose_calls"]
+_RESUME_KEYS = ("symbols", "rounds", "explore_rounds", "specs", "repeats", "model", "thinking", "data_version")
 
 _PROPOSE = """You write trading rules for a simulator. The goal is to maximize total profit: final equity minus starting cash minus deposits. Cash left uninvested earns the account's cash rate. You cannot create cash.
 Each rule is scored later by a deterministic runner over the explore window only. You do not see the test window.
@@ -146,35 +149,84 @@ def assert_rows_before(rows: list[dict], test_start: str) -> None:
             raise ValueError(f"explore result reaches the test window at {row.get('window_end')}")
 
 
-class FeatureCache:
-    """One feature view per as_of, shared by every isolated account."""
+def feature_cache_path(backend: str, data_version: str, symbols: list[str]) -> Path:
+    """One file per backend, snapshot version, and symbol list. A new snapshot starts a new file."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", data_version or "unpinned")
+    return REPO / "context" / "feature_cache" / (backend or "source") / safe / f"{'-'.join(symbols)}.jsonl"
 
-    def __init__(self, source: Any, symbols: list[str]):
+
+def _cache_key(as_of: Any) -> str:
+    return str(as_of).replace("+00:00", "Z")[:19]
+
+
+class FeatureCache:
+    """One feature view per as_of, shared by every isolated account and every round.
+
+    With ``path`` set, each view is appended to that JSON lines file and read back on
+    the next run, so a session is fetched from the lake once per snapshot version.
+    A view that failed with an exception is kept in memory only.
+    """
+
+    def __init__(self, source: Any, symbols: list[str], path: Path | None = None):
         self.source = source
         self.symbols = symbols
+        self.path = path
         self.cache: dict[str, list[dict]] = {}
         self.lock = threading.Lock()
         self.errors: list[str] = []
+        self.hits = 0
+        self.fetched = 0
+        self.loaded = 0
+        if path is not None and path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    entry = json.loads(line)
+                    self.cache[entry["as_of"]] = entry["rows"]
+            self.loaded = len(self.cache)
+
+    def __contains__(self, as_of: Any) -> bool:
+        return _cache_key(as_of) in self.cache
 
     def __call__(self, as_of: str) -> list[dict]:
-        key = str(as_of).replace("+00:00", "Z")[:19]
+        key = _cache_key(as_of)
         with self.lock:
-            if key not in self.cache:
-                try:
-                    self.cache[key] = load_features(self.source, as_of, self.symbols)
-                    if load_features.last_error and load_features.last_error not in self.errors:
-                        self.errors.append(load_features.last_error)
-                except Exception as exc:
-                    self.errors.append(str(exc).splitlines()[0][-300:])
-                    self.cache[key] = []
-            return self.cache[key]
+            if key in self.cache:
+                self.hits += 1
+                return self.cache[key]
+            try:
+                rows = load_features(self.source, as_of, self.symbols)
+                if load_features.last_error and load_features.last_error not in self.errors:
+                    self.errors.append(load_features.last_error)
+            except Exception as exc:
+                self.errors.append(str(exc).splitlines()[0][-300:])
+                self.cache[key] = []
+                return self.cache[key]
+            self.cache[key] = rows
+            self.fetched += 1
+            self._persist(key, rows)
+            return rows
+
+    def _persist(self, key: str, rows: list[dict]) -> None:
+        if self.path is None:
+            return
+        try:
+            line = json.dumps({"as_of": key, "rows": rows}, allow_nan=True)
+        except (TypeError, ValueError):
+            return
+        if json.loads(line)["rows"] != rows:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
     def prefetch(self, as_ofs: list[str]) -> None:
         started = time.perf_counter()
-        for index, as_of in enumerate(as_ofs, 1):
+        missing = [as_of for as_of in as_ofs if as_of not in self]
+        for index, as_of in enumerate(missing, 1):
             self(as_of)
-            if index == 1 or index == len(as_ofs) or index % 5 == 0:
-                print(f"features {index}/{len(as_ofs)} {time.perf_counter() - started:.1f}s", flush=True)
+            if index == 1 or index == len(missing) or index % 5 == 0:
+                print(f"features {index}/{len(missing)} fetched {time.perf_counter() - started:.1f}s", flush=True)
+        print(f"features {len(as_ofs) - len(missing)}/{len(as_ofs)} from cache, {len(missing)} fetched", flush=True)
 
 
 class LockedSource:
@@ -359,7 +411,9 @@ def propose_specs(runtime: Any, notes: str, symbols: list[str], count: int, pare
                   attempts: int = _PROPOSE_ATTEMPTS) -> list[StrategySpec]:
     prompt = _PROPOSE.format(universe=json.dumps(symbols), count=count, notes=notes or "(empty)")
     specs: list[StrategySpec] = []
+    propose_specs.last_calls = 0
     for attempt in range(1, attempts + 1):
+        propose_specs.last_calls = attempt
         try:
             text = runtime.complete(prompt, max_tokens=4096)
         except Exception as exc:
@@ -392,6 +446,9 @@ def propose_specs(runtime: Any, notes: str, symbols: list[str], count: int, pare
         spec.spec_id = f"{stem}-s{index:02d}-{uuid.uuid4().hex[:4]}"
         spec.parent_id = parent_id
     return specs
+
+
+propose_specs.last_calls = 0
 
 
 def write_notebook(out: Path, store: SnapshotStore, symbols: list[str], spec: dict, rows: list[dict], bench: dict,
@@ -532,9 +589,9 @@ def print_plan(plan: dict) -> None:
         flush=True,
     )
     print(
-        f"estimated total {plan['estimated_total_seconds'] / 60:.1f} min; "
-        f"with feature views cached across rounds ({plan['unique_feature_days']} distinct sessions) "
-        f"{plan['estimated_total_cached_seconds'] / 60:.1f} min",
+        f"estimated total with the shared feature cache {plan['estimated_total_cached_seconds'] / 60:.1f} min "
+        f"({plan['unique_feature_days']} sessions to fetch, {plan.get('feature_days_on_disk', 0)} already on disk); "
+        f"without the cache it would be {plan['estimated_total_seconds'] / 60:.1f} min",
         flush=True,
     )
 
@@ -546,6 +603,82 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({key: "" if row.get(key) is None else row.get(key) for key in _CSV_FIELDS})
+
+
+def write_proposals(path: Path, proposals: list[dict]) -> None:
+    """Per round and explore round: rules Nemotron proposed versus rules taken from the fallback list."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_PROPOSAL_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in proposals:
+            writer.writerow(row)
+
+
+def save_round(out: Path, spec: dict, nb: dict, rows: list[dict], records: list[dict],
+               proposals: list[dict], seconds: float) -> Path:
+    """Everything a resumed run needs from a finished round. Written last, so its presence means done."""
+    directory = out / "rounds"
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "round": spec["round"],
+        "spec": spec,
+        "notebook_id": nb["notebook_id"],
+        "notebook_text": nb["text"],
+        "rows": rows,
+        "records": records,
+        "proposals": proposals,
+        "seconds": round(seconds, 1),
+    }
+    path = directory / f"{spec['round']}.json"
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, default=str, indent=1), encoding="utf-8")
+    os.replace(temp, path)
+    return path
+
+
+def load_finished_rounds(out: Path, rounds: list[dict]) -> list[dict]:
+    """Finished rounds in run order. Stops at the first gap so later rounds never see a hole in the track."""
+    finished = []
+    for spec in rounds:
+        path = out / "rounds" / f"{spec['round']}.json"
+        if not path.exists():
+            break
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("spec") != spec:
+            raise SystemExit(f"{path} was written for different windows; use a new --out")
+        finished.append(payload)
+    return finished
+
+
+def check_run_config(out: Path, config: dict, resume: bool) -> None:
+    """A resumed run must use the same settings; a fresh run must not mix into old rounds."""
+    path = out / "run_config.json"
+    if resume and path.exists():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        changed = [key for key in _RESUME_KEYS if saved.get(key) != config.get(key)]
+        if changed:
+            raise SystemExit(f"--resume settings differ from {path}: {', '.join(changed)}")
+    elif not resume and any((out / "rounds").glob("*.json")):
+        raise SystemExit(f"{out} already has finished rounds; pass --resume or use a new --out")
+    path.write_text(json.dumps(config, indent=1), encoding="utf-8")
+
+
+def write_outputs(out: Path, rows: list[dict], proposals: list[dict]) -> None:
+    write_csv(out / "results.csv", rows)
+    write_proposals(out / "proposals.csv", proposals)
+    write_charts(out / "charts", rows)
+
+
+def print_proposals(proposals: list[dict]) -> None:
+    by_round: dict[str, list[dict]] = {}
+    for row in proposals:
+        by_round.setdefault(row["round"], []).append(row)
+    for round_id, items in by_round.items():
+        nemotron = sum(item["nemotron"] for item in items)
+        fallback = sum(item["fallback"] for item in items)
+        detail = ", ".join(f"r{item['explore_round']} {item['nemotron']}/{item['fallback']}" for item in items)
+        print(f"rules {round_id}: Nemotron {nemotron}, fallback {fallback} ({detail})", flush=True)
 
 
 def _svg(path: Path, title: str, body: str, width: int, height: int) -> None:
@@ -615,16 +748,50 @@ def write_charts(directory: Path, rows: list[dict]) -> None:
     _svg(directory / "cumulative_excess.svg", "Cumulative excess versus buy-and-hold", "".join(lines), width, height)
 
 
+class Progress:
+    """Append one line per phase to progress.jsonl and echo it, with time since the run started."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.started = time.perf_counter()
+
+    def log(self, round_id: str, phase: str, status: str, **extra: Any) -> None:
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "elapsed_s": round(time.perf_counter() - self.started, 1),
+            "round": round_id,
+            "phase": phase,
+            "status": status,
+            **extra,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, default=str) + "\n")
+        detail = " ".join(f"{key}={value}" for key, value in extra.items())
+        print(f"[progress] {entry['elapsed_s']:8.1f}s  {round_id}  {phase}  {status}  {detail}".rstrip(), flush=True)
+
+    @contextmanager
+    def phase(self, round_id: str, phase: str, **extra: Any):
+        began = time.perf_counter()
+        self.log(round_id, phase, "start", **extra)
+        info: dict[str, Any] = {}
+        yield info
+        self.log(round_id, phase, "done", seconds=round(time.perf_counter() - began, 1), **info)
+
+
 def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symbols: list[str], spec: dict,
                 notes: str, rounds: int, specs_per_round: int, workers: int,
-                track: list[dict] | None = None) -> tuple[dict, list[dict]]:
-    """Return the structured notebook and every explore row including buy-and-hold."""
+                track: list[dict] | None = None, features: FeatureCache | None = None,
+                progress: Progress | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """Return the structured notebook, every explore row including buy-and-hold, and proposal counts."""
     start, end = spec["explore_start"], spec["explore_end"]
     round_id = spec["round"]
+    progress = progress or Progress(out / "progress.jsonl")
     notebook_id = ""
     body = notes
     nb: dict = {}
     rows: list[dict] = []
+    proposals: list[dict] = []
     specs: dict[str, dict] = {}
     bench_cfg = run_config(start, end, symbols, f"{round_id}-bench", f"bench_{round_id}_{uuid.uuid4().hex[:6]}")
     print(f"explore {start}..{end} buy-and-hold", flush=True)
@@ -633,12 +800,26 @@ def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symb
         phase="explore", round_id=round_id, arm="buy_and_hold", repeat=1,
         start=start, end=end, spec_id="buy_and_hold", parent_id=notebook_id or None,
     )
-    features = FeatureCache(source, symbols)
+    features = features if features is not None else FeatureCache(source, symbols)
     times = decision_times(store, run_config(start, end, symbols, "calendar", f"cal_{uuid.uuid4().hex[:6]}"))
-    features.prefetch(times)
+    with progress.phase(round_id, "explore_features", sessions=len(times)) as info:
+        fetched_before = features.fetched
+        features.prefetch(times)
+        info["fetched"] = features.fetched - fetched_before
     for round_index in range(1, rounds + 1):
         parent = notebook_id or None
-        proposed = propose_specs(runtime, body, symbols, specs_per_round, parent)
+        with progress.phase(round_id, "propose", explore_round=round_index) as info:
+            proposed = propose_specs(runtime, body, symbols, specs_per_round, parent)
+            counts = {
+                "round": round_id,
+                "explore_round": round_index,
+                "nemotron": sum(1 for rule in proposed if rule.origin == "model"),
+                "fallback": sum(1 for rule in proposed if rule.origin == "fallback"),
+                "propose_calls": propose_specs.last_calls,
+            }
+            proposals.append(counts)
+            _save(out, "proposals", counts)
+            info.update({key: counts[key] for key in ("nemotron", "fallback", "propose_calls")})
         print(f"explore round {round_index}  {len(proposed)} specs  workers {workers}", flush=True)
         jobs = []
         for index, rule in enumerate(proposed, 1):
@@ -662,28 +843,36 @@ def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symb
             print(f"  {rule.name} net {row.get('net_profit')}", flush=True)
             return row
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            round_rows = list(pool.map(one, jobs))
+        with progress.phase(round_id, "explore_backtests", explore_round=round_index, specs=len(jobs)):
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                round_rows = list(pool.map(one, jobs))
         rows.extend(round_rows)
         notebook_id = f"nb-{round_id}-r{round_index}-{uuid.uuid4().hex[:4]}"
-        nb = write_notebook(out, store, symbols, spec, rows, bench, specs, len(times), track or [], notebook_id, parent)
+        with progress.phase(round_id, "notebook", explore_round=round_index):
+            nb = write_notebook(out, store, symbols, spec, rows, bench, specs, len(times), track or [], notebook_id, parent)
         body = nb["text"]
         _save(out, "notebook", {"notebook_id": notebook_id, "parent_id": parent, "round": round_id, "round_index": round_index})
         print(f"notebook {notebook_id} parent {parent or '-'}", flush=True)
     rows.append(bench)
-    return nb, rows
+    return nb, rows, proposals
 
 
 def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any, symbols: list[str], spec: dict,
-             nb: dict, best: dict, repeats: int, workers: int) -> tuple[list[dict], list[dict]]:
+             nb: dict, best: dict, repeats: int, workers: int, features: FeatureCache | None = None,
+             progress: Progress | None = None) -> tuple[list[dict], list[dict]]:
     """Return the test rows and the out-of-sample records of this round's top explore rules."""
     start, end = spec["test_start"], spec["test_end"]
+    progress = progress or Progress(out / "progress.jsonl")
     notebook_id = nb["notebook_id"]
     test_notes = notes_for_test(nb["text"])
     if leaks_test_window(test_notes, start):
         raise ValueError("test notebook contains a date from the test window")
-    features = FeatureCache(source, symbols)
-    features.prefetch(decision_times(store, run_config(start, end, symbols, "calendar", f"cal_{uuid.uuid4().hex[:6]}")))
+    features = features if features is not None else FeatureCache(source, symbols)
+    times = decision_times(store, run_config(start, end, symbols, "calendar", f"cal_{uuid.uuid4().hex[:6]}"))
+    with progress.phase(spec["round"], "test_features", sessions=len(times)) as info:
+        fetched_before = features.fetched
+        features.prefetch(times)
+        info["fetched"] = features.fetched - fetched_before
     spec_payload = json.loads((out / "specs" / f"{best['spec_id']}.json").read_text(encoding="utf-8"))
     jobs: list[tuple[str, int, Any, str]] = []
     for repeat in range(1, repeats + 1):
@@ -721,8 +910,9 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
             close()
         return row
 
-    with ThreadPoolExecutor(max_workers=max(workers, len(jobs))) as pool:
-        rows = list(pool.map(one, jobs))
+    with progress.phase(spec["round"], "test_arms", jobs=len(jobs)):
+        with ThreadPoolExecutor(max_workers=max(workers, len(jobs))) as pool:
+            rows = list(pool.map(one, jobs))
     bench_row = next(row for row in rows if row["arm"] == "buy_and_hold")
     records = []
     for entry in nb["top"]:
@@ -797,6 +987,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--model", default="")
     parser.add_argument("--thinking", default="off", choices=["on", "off"])
+    parser.add_argument("--resume", action="store_true", help="skip rounds already saved under OUT/rounds")
     args = parser.parse_args()
     symbols = [part.strip().upper() for part in args.symbols.split(",") if part.strip()]
     if args.rolling:
@@ -822,9 +1013,12 @@ def main() -> None:
     test_times = [decision_times(store, run_config(spec["test_start"], spec["test_end"], symbols, "dry", f"dry_t_{index}")) for index, spec in enumerate(rounds)]
     explore_days = [len(times) for times in explore_times]
     test_days = [len(times) for times in test_times]
-    unique_days = len({moment for times in explore_times + test_times for moment in times})
+    distinct = {_cache_key(moment) for times in explore_times + test_times for moment in times}
+    backend = os.environ.get("ANALYSIS_BACKEND", "zetaris").strip().lower()
+    on_disk = len(distinct & set(FeatureCache(None, symbols, feature_cache_path(backend, store.data_version, symbols)).cache))
     plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days, args.llm_concurrency,
-                       args.specs, args.workers, unique_days)
+                       args.specs, args.workers, len(distinct) - on_disk)
+    plan["feature_days_on_disk"] = on_disk
     if args.dry_run:
         print_plan(plan)
         return
@@ -840,32 +1034,65 @@ def main() -> None:
         inner = MeterlessRuntime(settings["base_url"], settings["meterless_runtime_token"], model, extra_body=extra)
         return GatedRuntime(inner, gate, args.retries)
 
+    check_run_config(out, {
+        "symbols": symbols,
+        "rounds": [spec["round"] for spec in rounds],
+        "explore_rounds": args.rounds,
+        "specs": args.specs,
+        "repeats": args.repeats,
+        "model": model,
+        "thinking": args.thinking,
+        "data_version": store.data_version,
+        "backend": opened.name,
+        "llm_concurrency": args.llm_concurrency,
+        "workers": args.workers,
+    }, args.resume)
+    features = FeatureCache(source, symbols, feature_cache_path(opened.name, store.data_version, symbols))
+    print(f"feature cache {features.path} ({features.loaded} sessions on disk)", flush=True)
+    progress = Progress(out / "progress.jsonl")
     planner = runtime_factory()
     notes = ""
     track: list[dict] = []
     all_rows: list[dict] = []
+    proposals: list[dict] = []
+    finished = load_finished_rounds(out, rounds) if args.resume else []
+    for payload in finished:
+        notes = payload["notebook_text"]
+        all_rows.extend(payload["rows"])
+        track.extend(payload["records"])
+        proposals.extend(payload["proposals"])
+        progress.log(payload["round"], "round", "skipped", reason="finished before --resume")
     try:
-        for spec in rounds:
-            print(f"round {spec['round']} explore {spec['explore_start']}..{spec['explore_end']} test {spec['test_start']}..{spec['test_end']}", flush=True)
-            nb, explore_rows = run_explore(
+        for spec in rounds[len(finished):]:
+            began = time.perf_counter()
+            progress.log(spec["round"], "round", "start", explore=f"{spec['explore_start']}..{spec['explore_end']}",
+                         test=f"{spec['test_start']}..{spec['test_end']}")
+            nb, explore_rows, round_proposals = run_explore(
                 out, store, source, planner, symbols, spec, notes, args.rounds, args.specs, args.workers, track,
+                features, progress,
             )
             notes = nb["text"]
-            all_rows.extend(explore_rows)
             winner = best_explore(explore_rows)
             print(f"best explore spec {winner['spec_id']} net {winner.get('net_profit')}", flush=True)
             test_rows, records = run_test(
                 out, store, source, runtime_factory, symbols, spec, nb, winner, args.repeats, args.workers,
+                features, progress,
             )
-            all_rows.extend(test_rows)
+            all_rows.extend(explore_rows + test_rows)
             track.extend(records)
+            proposals.extend(round_proposals)
             print_sql(test_rows)
+            print_proposals(round_proposals)
+            write_outputs(out, all_rows, proposals)
+            save_round(out, spec, nb, explore_rows + test_rows, records, round_proposals, time.perf_counter() - began)
+            progress.log(spec["round"], "round", "done", seconds=round(time.perf_counter() - began, 1),
+                         notebook=nb["notebook_id"], cache_fetched=features.fetched, cache_hits=features.hits)
     finally:
         planner.close()
-    write_csv(out / "results.csv", all_rows)
-    write_charts(out / "charts", all_rows)
+    write_outputs(out, all_rows, proposals)
     print_table(all_rows)
-    print(f"wrote {out / 'results.csv'}", flush=True)
+    print_proposals(proposals)
+    print(f"wrote {out / 'results.csv'} and {out / 'proposals.csv'}", flush=True)
 
 
 def print_sql(rows: list[dict]) -> None:
