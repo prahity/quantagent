@@ -106,6 +106,9 @@ def test_trader_binds_the_simulator_cutoff_and_drops_an_invented_figure(tmp_path
     calls = [json.loads(line) for line in (tmp_path / "model_calls.jsonl").read_text().splitlines()]
     assert len(calls) == 2
     assert calls[0]["request_id"] == "decision_00000"
+    logged_sql = [json.loads(line) for line in (tmp_path / "queries.jsonl").read_text().splitlines()]
+    assert logged_sql[0]["sql"].startswith("SELECT close FROM bars")
+    assert logged_sql[0]["as_of"] == "2024-01-03T14:30:00Z"
 
 
 def test_structure_action_keeps_orders_and_fills_ids_from_the_request():

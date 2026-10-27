@@ -1,0 +1,8 @@
+# USD per million tokens for the experiment cost column.
+# This repository does not record an official Nemotron list price.
+# These runs call NVIDIA's integrate API, which NVIDIA documents as a free
+# endpoint for nvidia/nemotron-3.5-lightning-30b-a3b, so both rates are 0.
+# Set NEMOTRON_INPUT_USD_PER_MTOK and NEMOTRON_OUTPUT_USD_PER_MTOK to override
+# this file when the model is served by a paid host.
+input_usd_per_mtok: 0
+output_usd_per_mtok: 0

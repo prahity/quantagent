@@ -18,7 +18,28 @@ def max_drawdown_pct(equity: list[float]) -> float:
     return worst * 100.0
 
 
+def excess_sharpe(daily_growth: list[float], cash_annual_rate: float, periods_per_year: int = 252) -> float | None:
+    """Sharpe of daily time-weighted growth minus the daily cash rate, annualized with sqrt(252).
+
+    Each growth factor is day-end equity divided by equity after that day's deposit.
+    A cash-only account grows by exactly the cash rate, so its excess is 0.
+    """
+    if len(daily_growth) < 2:
+        return None
+    daily_rate = float(cash_annual_rate) / periods_per_year
+    excess = np.asarray([float(factor) - 1.0 - daily_rate for factor in daily_growth], dtype=float)
+    if not np.isfinite(excess).all():
+        return None
+    excess = np.where(np.abs(excess) < 1e-12, 0.0, excess)
+    std = float(excess.std(ddof=1))
+    mean = float(excess.mean())
+    if not math.isfinite(std) or std == 0.0:
+        return 0.0 if abs(mean) <= 1e-12 else None
+    return mean / std * math.sqrt(periods_per_year)
+
+
 def sharpe(equity: list[float], periods_per_year: int) -> float | None:
+    """Legacy per-bar Sharpe. Reports use excess_sharpe on daily time-weighted returns."""
     if len(equity) < 3:
         return None
     arr = np.asarray(equity, dtype=float)

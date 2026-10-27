@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s06-59e7",
+  "parent_id": null,
+  "name": "drawdown_break",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "momentum",
+    "lookback": 63,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.3,
+  "cash_floor": 0.1,
+  "rebalance_every": 5,
+  "min_weight_change": 0.05,
+  "drawdown_cut": 0.12,
+  "origin": "model"
+}

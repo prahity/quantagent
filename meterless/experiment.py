@@ -4,7 +4,7 @@ The simulator owns cash, fills, and the score. Each spec and each test arm
 has its own run. The test notebook is the explore notebook and nothing written
 from T. 2025 and 2026 stay closed unless --split validation or --split test.
 
-    python -m meterless.experiment --explore 2024-01 --test 2024-02 --rounds 1 --repeats 1
+    python -m meterless.experiment --explore 2024-01..2024-03 --test 2024-04 --rounds 1 --repeats 1
 """
 from __future__ import annotations
 
@@ -48,8 +48,10 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _PROPOSE_TOKENS = (2200, 1800)
 _NOTE_TOKENS = (2500, 700)
-_MEMORY_TOKENS = 4500
-_NOMEM_TOKENS = 3600
+_MEMORY_TOKENS = (3500, 1000)  # one SQL call or one action call: prompt, completion
+_NOMEM_TOKENS = (2800, 800)
+_CALLS_PER_DECISION = 2  # recall=sql asks for SQL, then for the action
+_SECONDS_PER_CALL = 4.7  # April 2024 test: 44 calls per arm in 206s, with two arms overlapping
 _ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash")
 _CSV_FIELDS = [
     "round", "phase", "arm", "repeat", "window_start", "window_end", "spec_id", "parent_id", "run_id",
@@ -92,10 +94,25 @@ def month_window(value: str) -> tuple[str, str]:
     return day.isoformat(), day.isoformat()
 
 
+def parse_window(value: str) -> tuple[str, str]:
+    """One month, or `YYYY-MM..YYYY-MM` for a span of months."""
+    if ".." in value:
+        left, right = [part.strip() for part in value.split("..", 1)]
+        start, _end_left = month_window(left)
+        _start_right, end = month_window(right)
+        if start > end:
+            raise ValueError(f"window {value} ends before it starts")
+        return start, end
+    return month_window(value)
+
+
 def rolling_rounds(year: int = 2024) -> list[dict]:
-    """Explore is January through the month before k. Test is month k, February through December."""
+    """Explore is January through the month before k. Test is month k, April through December.
+
+    March is the first explore end, so every test month has 63 trading sessions of history.
+    """
     rounds = []
-    for month in range(2, 13):
+    for month in range(4, 13):
         explore_end = date(year, month - 1, calendar.monthrange(year, month - 1)[1])
         test_end = date(year, month, calendar.monthrange(year, month)[1])
         rounds.append({
@@ -271,9 +288,23 @@ def _tokens(run_id: str) -> tuple[int, int, int]:
     return prompt, completion, total
 
 
+def token_rates() -> tuple[float, float]:
+    """USD per million input and output tokens. Environment overrides meterless/pricing.yaml."""
+    env_in = os.environ.get("NEMOTRON_INPUT_USD_PER_MTOK")
+    env_out = os.environ.get("NEMOTRON_OUTPUT_USD_PER_MTOK")
+    file_in = file_out = 0.0
+    path = REPO / "meterless" / "pricing.yaml"
+    if path.exists():
+        import yaml
+
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        file_in = float(loaded.get("input_usd_per_mtok") or 0)
+        file_out = float(loaded.get("output_usd_per_mtok") or 0)
+    return float(env_in) if env_in not in (None, "") else file_in, float(env_out) if env_out not in (None, "") else file_out
+
+
 def _cost(prompt: int, completion: int, total: int) -> float:
-    in_rate = float(os.environ.get("NEMOTRON_INPUT_USD_PER_MTOK") or 0)
-    out_rate = float(os.environ.get("NEMOTRON_OUTPUT_USD_PER_MTOK") or 0)
+    in_rate, out_rate = token_rates()
     if in_rate or out_rate:
         return prompt / 1e6 * in_rate + completion / 1e6 * out_rate
     return total / 1e6 * float(os.environ.get("NEMOTRON_USD_PER_MTOK") or 0)
@@ -458,19 +489,32 @@ def _spec_dump(out: Path, spec: StrategySpec) -> None:
     _save(out, "spec", spec.model_dump())
 
 
-def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: list[int], test_days: list[int]) -> dict:
-    """Count model calls. Rule backtests, buy-and-hold, and cash call no model."""
+def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: list[int], test_days: list[int],
+                 llm_concurrency: int = 2) -> dict:
+    """Count model calls. Rule backtests, buy-and-hold, and cash call no model.
+
+    Each test decision is two calls: the SQL the model writes, then the action.
+    """
     propose = len(rounds) * n_rounds
     notes = len(rounds) * n_rounds
-    memory = sum(test_days) * repeats
+    decisions = sum(test_days) * repeats
+    memory = decisions * _CALLS_PER_DECISION
     nomem = memory
     calls = propose + notes + memory + nomem
-    tokens = (
-        propose * sum(_PROPOSE_TOKENS)
-        + notes * sum(_NOTE_TOKENS)
-        + memory * _MEMORY_TOKENS
-        + nomem * _NOMEM_TOKENS
+    prompt = (
+        propose * _PROPOSE_TOKENS[0]
+        + notes * _NOTE_TOKENS[0]
+        + memory * _MEMORY_TOKENS[0]
+        + nomem * _NOMEM_TOKENS[0]
     )
+    completion = (
+        propose * _PROPOSE_TOKENS[1]
+        + notes * _NOTE_TOKENS[1]
+        + memory * _MEMORY_TOKENS[1]
+        + nomem * _NOMEM_TOKENS[1]
+    )
+    in_rate, out_rate = token_rates()
+    workers = max(int(llm_concurrency), 1)
     return {
         "rounds": rounds,
         "explore_rounds_each": n_rounds,
@@ -478,9 +522,18 @@ def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: l
         "notebook_calls": notes,
         "memory_decision_calls": memory,
         "nomem_decision_calls": nomem,
+        "calls_per_decision": _CALLS_PER_DECISION,
         "rule_buyhold_cash_calls": 0,
         "llm_calls": calls,
-        "estimated_tokens": tokens,
+        "estimated_prompt_tokens": prompt,
+        "estimated_completion_tokens": completion,
+        "estimated_tokens": prompt + completion,
+        "input_usd_per_mtok": in_rate,
+        "output_usd_per_mtok": out_rate,
+        "estimated_cost": prompt / 1e6 * in_rate + completion / 1e6 * out_rate,
+        "estimated_wall_seconds": calls / workers * _SECONDS_PER_CALL,
+        "seconds_per_call": _SECONDS_PER_CALL,
+        "llm_concurrency": workers,
         "explore_days": explore_days,
         "test_days": test_days,
     }
@@ -496,11 +549,23 @@ def print_plan(plan: dict) -> None:
         )
     print(
         f"propose {plan['propose_calls']}  notebook {plan['notebook_calls']}  "
-        f"memory decisions {plan['memory_decision_calls']}  nomem decisions {plan['nomem_decision_calls']}  "
+        f"memory calls {plan['memory_decision_calls']}  nomem calls {plan['nomem_decision_calls']}  "
+        f"({plan['calls_per_decision']} per decision)  "
         f"rule/buy-and-hold/cash model calls {plan['rule_buyhold_cash_calls']}",
         flush=True,
     )
-    print(f"estimated tokens {plan['estimated_tokens']}", flush=True)
+    print(
+        f"estimated tokens {plan['estimated_tokens']}  "
+        f"rates ${plan['input_usd_per_mtok']}/M input ${plan['output_usd_per_mtok']}/M output  "
+        f"estimated cost ${plan['estimated_cost']:.4f}",
+        flush=True,
+    )
+    print(
+        f"estimated model wall {plan['estimated_wall_seconds'] / 60:.1f} min "
+        f"at {plan['seconds_per_call']}s per call and concurrency {plan['llm_concurrency']} "
+        f"(rule backtests are local and not in this figure)",
+        flush=True,
+    )
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -654,8 +719,8 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
     spec_payload = json.loads((out / "specs" / f"{best['spec_id']}.json").read_text(encoding="utf-8"))
     jobs: list[tuple[str, int, Any, str]] = []
     for repeat in range(1, repeats + 1):
-        memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="brief")
-        nomem = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=None, recall="notes")
+        memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="sql")
+        nomem = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=source, recall="sql")
         jobs.append(("memory", repeat, memory, notebook_id))
         jobs.append(("nomem", repeat, nomem, ""))
     jobs.append(("best_rule", 1, RuleRunner(spec_payload, features), best["spec_id"]))
@@ -707,7 +772,7 @@ def _fmt(value: Any) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=str(REPO / "context" / "experiments" / "explore-2024"))
-    parser.add_argument("--explore", default="2024-01", help="explore month YYYY-MM")
+    parser.add_argument("--explore", default="2024-01", help="explore month YYYY-MM, or YYYY-MM..YYYY-MM")
     parser.add_argument("--test", default="2024-02", help="test month YYYY-MM, strictly after explore")
     parser.add_argument("--rolling", action="store_true", help="explore Jan..month k-1, test month k, for February..December 2024")
     parser.add_argument("--rounds", type=int, default=3)
@@ -726,8 +791,8 @@ def main() -> None:
     if args.rolling:
         rounds = rolling_rounds(2024)
     else:
-        explore_start, explore_end = month_window(args.explore)
-        test_start, test_end = month_window(args.test)
+        explore_start, explore_end = parse_window(args.explore)
+        test_start, test_end = parse_window(args.test)
         if test_start <= explore_end:
             raise SystemExit(f"test window {test_start} must start after explore end {explore_end}")
         rounds = [{
@@ -744,7 +809,7 @@ def main() -> None:
     store = SnapshotStore.load(SIM / "sim" / "snapshot")
     explore_days = [len(decision_times(store, run_config(spec["explore_start"], spec["explore_end"], symbols, "dry", f"dry_e_{index}"))) for index, spec in enumerate(rounds)]
     test_days = [len(decision_times(store, run_config(spec["test_start"], spec["test_end"], symbols, "dry", f"dry_t_{index}"))) for index, spec in enumerate(rounds)]
-    plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days)
+    plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days, args.llm_concurrency)
     if args.dry_run:
         print_plan(plan)
         return
@@ -752,7 +817,9 @@ def main() -> None:
     model = args.model or settings["model"]
     extra = {} if args.thinking == "on" else {"chat_template_kwargs": {"enable_thinking": False}}
     gate = threading.Semaphore(args.llm_concurrency)
-    source = LockedSource(open_analysis_source(snapshot_dir=SIM / "sim" / "snapshot"))
+    opened = open_analysis_source(snapshot_dir=SIM / "sim" / "snapshot")
+    opened.feature_symbols = list(symbols)
+    source = LockedSource(opened)
 
     def runtime_factory() -> GatedRuntime:
         inner = MeterlessRuntime(settings["base_url"], settings["meterless_runtime_token"], model, extra_body=extra)

@@ -14,7 +14,7 @@ from contracts.report import EquityPoint, Fill, Rejection, Report
 from sim.broker import ExecutionConfig, Ledger
 from sim.config import load_environment, universe_symbols
 from sim.feed import Feed
-from sim.metrics import max_drawdown_pct, sharpe, trade_totals, with_drawdown
+from sim.metrics import excess_sharpe, max_drawdown_pct, trade_totals, with_drawdown
 from sim.news_queue import NewsQueue
 from sim.scheduler import PendingOrder, Scheduler
 from sim.store import NOMINAL_SECONDS, MarketTimeline, SnapshotStore
@@ -89,7 +89,8 @@ class Engine:
         self.execution = ExecutionConfig.from_dict(config.execution)
         env = load_environment()
         self.news_cfg = {**(env.get("news") or {}), **config.news}
-        self.sharpe_ppy = int(((env.get("report") or {}).get("sharpe_periods_per_year") or {}).get(config.interval, 252))
+        # Daily time-weighted excess returns, annualized with sqrt(252), on hourly and daily runs.
+        self.sharpe_ppy = 252
 
         unknown = sorted(set(config.symbols) - set(store.symbols(config.interval)))
         if unknown:
@@ -403,7 +404,7 @@ class Engine:
             daily_deposit=float(self.config.daily_deposit),
             cash_annual_rate=float(self.config.cash_annual_rate),
             daily_cash=self.daily_cash,
-            sharpe=sharpe(equity, self.sharpe_ppy),
+            sharpe=excess_sharpe(self._twr_factors, float(self.config.cash_annual_rate), self.sharpe_ppy),
             sharpe_periods_per_year=self.sharpe_ppy,
             turnover=totals["traded_notional"] / self.config.initial_cash,
             traded_notional=totals["traded_notional"],

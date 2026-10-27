@@ -52,7 +52,6 @@ news:
   prioritize_positions: true
 
 report:
-  # Per-bar returns are used for Sharpe; annualization factor depends on the interval.
-  sharpe_periods_per_year:
-    hourly: 1638   # 6.5 trading hours * 252 days
-    daily: 252
+  # Sharpe uses one time-weighted return per trading day, minus cash_annual_rate/252,
+  # annualized with sqrt(252). Deposits are already out of the daily factor.
+  sharpe_periods_per_year: 252

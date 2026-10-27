@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s08-375a",
+  "parent_id": null,
+  "name": "min_weight_low",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "mean_reversion",
+    "lookback": 5,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.15,
+  "cash_floor": 0.2,
+  "rebalance_every": 5,
+  "min_weight_change": 0.03,
+  "drawdown_cut": 0.1,
+  "origin": "model"
+}

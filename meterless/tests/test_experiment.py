@@ -6,7 +6,7 @@ import pytest
 import meterless.experiment as experiment
 from agent.scripted import AccumulatingBuyAndHold, make_order
 from meterless.query import QueryRequest, SqliteSource
-from meterless.strategy import Signal, Selection, StrategySpec, feature_sql, load_features
+from meterless.strategy import Signal, Selection, StrategySpec, _python_features, feature_sql, load_features
 from sim.service import SimulatorService
 from sim.store import SnapshotStore
 
@@ -64,6 +64,47 @@ def test_feature_view_stops_at_as_of(tmp_path):
         as_of=as_of,
     ), row_limit=100)
     assert 9999 not in [row["close"] for row in direct.rows]
+
+
+def test_short_history_stays_null(tmp_path):
+    bars = []
+    for offset in range(8):
+        close = 100 + offset
+        day = f"2024-01-{offset + 2:02d}"
+        bars.append({
+            "symbol": "AAPL", "interval": "daily", "ts": f"{day}T00:00:00Z",
+            "open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 100,
+        })
+    source = SqliteSource.build(tmp_path / "short.sqlite", bars, [])
+    source.feature_symbols = ["AAPL"]
+    as_of = "2024-01-10T14:30:00Z"
+    rows = load_features(source, as_of, ["AAPL"])
+    assert load_features.last_error == ""
+    row = rows[0]
+    assert row["ret_5"] is not None
+    assert row["ret_21"] is None and row["ret_63"] is None
+    assert row["vol_21"] is None and row["ma_gap_21"] is None and row["ma_gap_63"] is None and row["dd_63"] is None
+    via_sql = source.execute(QueryRequest(
+        run_id="t", request_id="t", query_id="feat", goal="features",
+        sql="SELECT close, ret_5, ret_21, vol_21, ma_gap_63, dd_63 FROM features",
+        as_of=as_of,
+    ))
+    assert via_sql.error == ""
+    assert via_sql.rows[0]["close"] == 107
+    assert via_sql.rows[0]["ret_21"] is None and via_sql.rows[0]["vol_21"] is None
+    assert via_sql.rows[0]["dd_63"] is None
+    python_rows = _python_features(source, as_of, ["AAPL"])
+    assert python_rows[0]["vol_21"] is None and python_rows[0]["dd_63"] is None and python_rows[0]["ret_5"] is not None
+
+
+def test_rolling_waits_until_april():
+    rounds = experiment.rolling_rounds()
+    assert rounds[0]["explore_start"] == "2024-01-01"
+    assert rounds[0]["explore_end"] == "2024-03-31"
+    assert rounds[0]["test_start"] == "2024-04-01"
+    assert rounds[-1]["test_start"] == "2024-12-01"
+    assert all(item["test_start"] >= "2024-04-01" for item in rounds)
+    assert experiment.parse_window("2024-01..2024-03") == ("2024-01-01", "2024-03-31")
 
 
 def test_test_notebook_has_no_test_window():

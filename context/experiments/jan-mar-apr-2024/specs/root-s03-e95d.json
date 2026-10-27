@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s03-e95d",
+  "parent_id": null,
+  "name": "rel_strength_63",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "relative_strength",
+    "lookback": 63,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 1,
+    "threshold": null
+  },
+  "target_weight": 0.35,
+  "cash_floor": 0.15,
+  "rebalance_every": 10,
+  "min_weight_change": 0.07,
+  "drawdown_cut": 0.15,
+  "origin": "model"
+}

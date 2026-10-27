@@ -1,0 +1,27 @@
+{
+  "spec_id": "root-s04-14c1",
+  "parent_id": null,
+  "name": "vol_scalp_21",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "signal": {
+    "kind": "volatility",
+    "lookback": 21,
+    "max_days_since_filing": null,
+    "forms": []
+  },
+  "selection": {
+    "mode": "top_n",
+    "top_n": 3,
+    "threshold": null
+  },
+  "target_weight": 0.2,
+  "cash_floor": 0.25,
+  "rebalance_every": 1,
+  "min_weight_change": 0.02,
+  "drawdown_cut": 0.08,
+  "origin": "model"
+}

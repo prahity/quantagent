@@ -7,7 +7,7 @@ import pytest
 
 from agent.scripted import BuyAndHoldAgent, CashOnlyAgent
 from runner import LocalFeedReader, run_agent
-from sim.metrics import max_drawdown_pct
+from sim.metrics import excess_sharpe, max_drawdown_pct
 from sim.service import SimulatorService
 from tests.conftest import act, hold, make_engine, order, run_to_end
 
@@ -95,6 +95,15 @@ def test_interest_compounds_on_cash_once_per_trading_day(store):
     assert report.time_weighted_return_pct == pytest.approx(report.return_pct)
 
 
+def test_excess_sharpe_subtracts_the_cash_rate():
+    daily = 0.05 / 252
+    flat = [1 + daily] * 6
+    assert excess_sharpe(flat, 0.05) == pytest.approx(0.0, abs=1e-9)
+    ahead = [1 + daily + 0.01, 1 + daily - 0.005, 1 + daily + 0.002, 1 + daily + 0.004]
+    assert excess_sharpe(ahead, 0.05) > 0
+    assert excess_sharpe([1.01], 0.05) is None
+
+
 def test_hold_compounds_the_quoted_rate(store):
     engine = make_engine(store, interval="daily", start="2025-01-28", end="2025-02-04", symbols=["AAPL"], cash_annual_rate=0.05, run_id="compound")
     report = run_to_end(engine)
@@ -117,6 +126,9 @@ def test_net_profit_excludes_deposits_and_drawdown_is_deposit_adjusted(store):
     expected = ((1 + 0.05 / 252) ** len(report.daily_cash) - 1) * 100
     assert report.time_weighted_return_pct == pytest.approx(expected)
     assert report.time_weighted_return_pct != pytest.approx(report.return_pct)
+    # Cash earns exactly the rate that Sharpe subtracts, so the ratio is zero.
+    assert report.sharpe == pytest.approx(0.0, abs=1e-9)
+    assert report.sharpe_periods_per_year == 252
 
 
 class _Marks:

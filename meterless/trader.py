@@ -67,10 +67,10 @@ _MAX_TOKENS = 700
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _SIM_RUNS = Path(__file__).resolve().parents[1] / "simulator" / "runs"
 
-_QUERY_PROMPT = """You are the trading agent. Historical prices and filings are in the SQL relations below, already cut off at this decision's as_of. Use SQL when you need history. Do not estimate a return, a price, or a filing date.
+_QUERY_PROMPT = """You are the trading agent. Historical prices, filings, and the feature view are in the SQL relations below, already cut off at this decision's as_of. Use SQL when you need history. Prefer `features` for returns, volatility, moving-average gaps, drawdown, relative strength versus SPY, and filing distances. Do not estimate a return, a price, or a filing date.
 {schema}
 Return either {{"goal":"<what you need to know>","sql":"<one SELECT>"}} or the action JSON from the trading instructions.
-The simulator's as_of is fixed. Putting a later time in the SQL does not reveal it.
+The simulator's as_of is fixed. Putting a later time in the SQL does not reveal it. A feature column is null when the released history is shorter than that window.
 
 Trading instructions:
 """
@@ -239,6 +239,13 @@ class NemotronTrader:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
+    def _log_query(self, request: dict, result: QueryResult, model_sql: str | None = None) -> None:
+        self.queries.append(result)
+        payload = {"request_id": request.get("request_id"), "as_of": request.get("as_of"), **result.as_dict()}
+        if model_sql:
+            payload["sql"] = model_sql
+        self._append_log(request, "queries.jsonl", payload)
+
     def _log_model_call(self, request: dict, attempt: int, error: str | None) -> None:
         recorded = getattr(self.runtime, "last_completion", None)
         self._append_log(request, "model_calls.jsonl", {
@@ -311,7 +318,8 @@ class NemotronTrader:
         visible = self._visible(request, feed)
         if self.recall == "brief" and self.source is not None:
             brief, found = fetch_brief(self.source, request)
-            self.queries.extend(found)
+            for item in found:
+                self._log_query(request, item)
             text = self._complete(self._prompt(visible) + "\n" + brief, request)
             if isinstance(text, dict):
                 return text
@@ -344,7 +352,7 @@ class NemotronTrader:
                     sql=sql,
                     as_of=str(request.get("as_of") or ""),
                 ))
-                self.queries.append(result)
+                self._log_query(request, result, sql.strip())
                 found.append(result)
                 continue
             if "orders" in parsed:

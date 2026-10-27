@@ -214,24 +214,28 @@ vol AS (
   SELECT symbol, sqrt(CASE WHEN avg(ret * ret) - avg(ret) * avg(ret) > 0
        THEN avg(ret * ret) - avg(ret) * avg(ret) ELSE 0 END) AS vol_21
   FROM rets GROUP BY symbol
+  HAVING count(*) >= 21
 ),
 ma21 AS (
   SELECT d.symbol AS symbol, avg(d.close) AS ma
   FROM daily d JOIN mx m ON d.symbol = m.symbol
   WHERE d.n > m.n_last - 21 AND d.n <= m.n_last
   GROUP BY d.symbol
+  HAVING count(*) >= 21
 ),
 ma63 AS (
   SELECT d.symbol AS symbol, avg(d.close) AS ma
   FROM daily d JOIN mx m ON d.symbol = m.symbol
   WHERE d.n > m.n_last - 63 AND d.n <= m.n_last
   GROUP BY d.symbol
+  HAVING count(*) >= 63
 ),
 hi63 AS (
   SELECT d.symbol AS symbol, max(d.high) AS hi
   FROM daily d JOIN mx m ON d.symbol = m.symbol
   WHERE d.n > m.n_last - 63 AND d.n <= m.n_last
   GROUP BY d.symbol
+  HAVING count(*) >= 63
 ),
 last_file AS (
   SELECT symbol, max(substr(available_at, 1, 10)) AS last_filing
@@ -369,7 +373,7 @@ def _python_features(source: AnalysisSource, as_of: str, symbols: list[str]) -> 
         window = [value for value in closes[-22:] if value]
         rets = [window[i] / window[i - 1] - 1 for i in range(1, len(window)) if window[i - 1]]
         vol = None
-        if len(rets) >= 2:
+        if len(rets) >= 21:
             mean = sum(rets) / len(rets)
             var = sum(item * item for item in rets) / len(rets) - mean * mean
             vol = math.sqrt(var) if var > 0 else 0.0
@@ -380,7 +384,7 @@ def _python_features(source: AnalysisSource, as_of: str, symbols: list[str]) -> 
             average = sum(sample) / len(sample)
             return None if average == 0 else closes[-1] / average - 1
         hi = [value for value in highs[-63:] if value]
-        peak = max(hi) if hi else None
+        peak = max(hi) if len(hi) >= 63 else None
         built.append({
             "symbol": symbol,
             "close": closes[-1],
@@ -416,3 +420,42 @@ def load_features(source: AnalysisSource, as_of: str, symbols: list[str]) -> lis
 
 
 load_features.last_error = ""
+
+_FEATURE_COLUMNS = (
+    "symbol", "close", "ret_5", "ret_21", "ret_63", "vol_21", "ma_gap_21", "ma_gap_63",
+    "dd_63", "rs_spy", "days_since_filing", "days_until_filing", "last_filing", "next_filing",
+)
+_FEATURE_KIND = {
+    "symbol": "STRING", "close": "DOUBLE", "ret_5": "DOUBLE", "ret_21": "DOUBLE", "ret_63": "DOUBLE",
+    "vol_21": "DOUBLE", "ma_gap_21": "DOUBLE", "ma_gap_63": "DOUBLE", "dd_63": "DOUBLE", "rs_spy": "DOUBLE",
+    "days_since_filing": "INT", "days_until_filing": "INT", "last_filing": "STRING", "next_filing": "STRING",
+}
+
+
+def _feature_literal(column: str, value: Any) -> str:
+    kind = _FEATURE_KIND[column]
+    if value is None or value == "":
+        return f"CAST(NULL AS {kind})"
+    if kind == "STRING":
+        return "CAST('" + str(value).replace("'", "''") + f"' AS {kind})"
+    if kind == "INT":
+        return f"CAST({int(value)} AS {kind})"
+    return f"CAST({float(value)} AS {kind})"
+
+
+def bind_features(sql: str, rows: list[dict]) -> str:
+    """Put the as_of feature rows in front of one agent statement as `features`."""
+    if rows:
+        selects = []
+        for row in rows:
+            columns = ", ".join(f"{_feature_literal(column, row.get(column))} AS {column}" for column in _FEATURE_COLUMNS)
+            selects.append(f"SELECT {columns}")
+        body = " UNION ALL ".join(selects)
+    else:
+        columns = ", ".join(f"CAST(NULL AS {_FEATURE_KIND[column]}) AS {column}" for column in _FEATURE_COLUMNS)
+        body = f"SELECT {columns} WHERE 1 = 0"
+    clause = f"features AS ({body})"
+    statement = sql.strip().rstrip(";").strip()
+    if statement.lower().startswith("with"):
+        return f"WITH {clause}, {statement[4:].lstrip()}"
+    return f"WITH {clause} {statement}"

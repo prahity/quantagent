@@ -38,14 +38,17 @@ _HIDDEN_SQL = re.compile(
 SCHEMA = """Relations already limited to records available at this decision's as_of. A date filter cannot reveal later rows.
 bars(symbol, interval, ts, open, high, low, close, volume)
 filings(symbol, form, title, published_at, available_at)
+features(symbol, close, ret_5, ret_21, ret_63, vol_21, ma_gap_21, ma_gap_63, dd_63, rs_spy, days_since_filing, days_until_filing, last_filing, next_filing)
 interval is 'daily' or 'hourly'. Times are UTC text, YYYY-MM-DDTHH:MM:SSZ.
-Reply with one SELECT, or WITH ... SELECT, reading only bars and filings.
+ret_5, ret_21 and ret_63 are the close-to-close return over that many released sessions. vol_21 is the volatility of the last 21 daily returns. ma_gap_21 and ma_gap_63 are the close divided by that moving average, minus 1. dd_63 is the drawdown from the 63-session high. rs_spy is ret_21 minus SPY's ret_21. days_since_filing and days_until_filing count from filings already released by as_of. A feature is null when fewer released sessions exist than the window. The cutoff is applied before this view is built.
+Reply with one SELECT, or WITH ... SELECT, reading only bars, filings, and features.
 """
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NOMINAL_SECONDS = {"daily": 86400, "hourly": 3600}
 _ROW_LIMIT = 30
-_ALLOWED_READ = {"bars", "filings"}
+_ALLOWED_READ = {"bars", "filings", "features"}
+_FEATURES_NAME = re.compile(r"\bfeatures\b", re.IGNORECASE)
 _ALLOWED_ACTION = {
     sqlite3.SQLITE_READ,
     sqlite3.SQLITE_SELECT,
@@ -124,6 +127,33 @@ def _cell(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def attach_feature_view(source: Any, request: QueryRequest) -> QueryRequest:
+    """Replace a query that reads `features` with the rows released at its as_of.
+
+    The view is built by the cutoff query, then inlined. The agent's SQL cannot
+    move that cutoff, and a short history stays null.
+    """
+    if getattr(source, "_binding_features", False) or not _FEATURES_NAME.search(request.sql or ""):
+        return request
+    source._binding_features = True
+    try:
+        from meterless.strategy import bind_features, load_features
+
+        rows = load_features(source, request.as_of, list(getattr(source, "feature_symbols", None) or []))
+        sql = bind_features(request.sql, rows)
+    finally:
+        source._binding_features = False
+    return QueryRequest(
+        run_id=request.run_id,
+        request_id=request.request_id,
+        query_id=request.query_id,
+        goal=request.goal,
+        sql=sql,
+        as_of=request.as_of,
+        parameters=dict(request.parameters),
+    )
+
+
 def one_select(sql: str) -> str:
     text = sql.strip().rstrip(";").strip()
     if not text or ";" in text:
@@ -196,6 +226,7 @@ class SqliteSource:
     def __init__(self, path: Path, data_version: str):
         self.path = Path(path)
         self.data_version = data_version
+        self.feature_symbols: list[str] = []
 
     @classmethod
     def build(cls, path: Path, bars: list[dict], filings: list[dict], data_version: str = "local") -> "SqliteSource":
@@ -254,6 +285,7 @@ class SqliteSource:
         return cls(db_path, data_version)
 
     def execute(self, request: QueryRequest, row_limit: int | None = None) -> QueryResult:
+        request = attach_feature_view(self, request)
         started = time.perf_counter()
         try:
             statement = one_select(request.sql)
@@ -315,6 +347,7 @@ class ZetarisSource:
         self.bars_view = bars_view
         self.filings_view = filings_view
         self.data_version = data_version
+        self.feature_symbols: list[str] = []
         self._client = client or httpx.Client(timeout=30)
 
     @classmethod
@@ -346,6 +379,7 @@ class ZetarisSource:
         return f"WITH {bound} {statement}"
 
     def execute(self, request: QueryRequest) -> QueryResult:
+        request = attach_feature_view(self, request)
         started = time.perf_counter()
         try:
             statement = self.prepare(request.sql, request.as_of)
@@ -483,6 +517,7 @@ class JdbcZetarisSource:
         self._user = user
         self._password = password
         self.data_version = ""
+        self.feature_symbols: list[str] = []
         self._conn = None
         if connect:
             self._require_login()
@@ -576,6 +611,7 @@ class JdbcZetarisSource:
         return f"SELECT * FROM ({wrapped}) LIMIT {self._row_limit + 1}"
 
     def execute(self, request: QueryRequest, row_limit: int | None = None) -> QueryResult:
+        request = attach_feature_view(self, request)
         started = time.perf_counter()
         try:
             statement = self.prepare(request.sql, request.as_of, row_limit)
