@@ -33,7 +33,7 @@ from agent.rules import RuleRunner, _targets  # noqa: E402
 from agent.scripted import AccumulatingBuyAndHold, CashOnlyAgent  # noqa: E402
 from meterless import explore_notebook  # noqa: E402
 from meterless.provider import MeterlessRuntime, ProviderError, load_settings  # noqa: E402
-from meterless.query import open_analysis_source  # noqa: E402
+from meterless.query import LakeError, open_analysis_source  # noqa: E402
 from meterless.strategy import (  # noqa: E402
     StrategySpec,
     fallback_specs,
@@ -67,6 +67,15 @@ _CSV_FIELDS = [
     "net_profit", "twr", "max_drawdown", "sharpe", "turnover", "fills", "rejections",
     "tokens", "cost", "wall_time", "name", "origin",
 ]
+# Set by the first lake failure so the other arms stop at their next lake call instead of running on.
+_LAKE_DOWN = threading.Event()
+
+
+def _raise_if_lake_down() -> None:
+    if _LAKE_DOWN.is_set():
+        raise LakeError("stopped: an earlier lake call in this round failed")
+
+
 _PROPOSAL_FIELDS = ["round", "explore_round", "nemotron", "fallback", "propose_calls"]
 _RESUME_KEYS = ("symbols", "rounds", "explore_rounds", "specs", "repeats", "model", "thinking", "data_version")
 
@@ -164,7 +173,7 @@ class FeatureCache:
 
     With ``path`` set, each view is appended to that JSON lines file and read back on
     the next run, so a session is fetched from the lake once per snapshot version.
-    A view that failed with an exception is kept in memory only.
+    A view that failed raises LakeError and is neither cached nor written.
     """
 
     def __init__(self, source: Any, symbols: list[str], path: Path | None = None):
@@ -193,14 +202,17 @@ class FeatureCache:
             if key in self.cache:
                 self.hits += 1
                 return self.cache[key]
+            _raise_if_lake_down()
             try:
                 rows = load_features(self.source, as_of, self.symbols)
-                if load_features.last_error and load_features.last_error not in self.errors:
-                    self.errors.append(load_features.last_error)
+            except LakeError:
+                _LAKE_DOWN.set()
+                raise
             except Exception as exc:
-                self.errors.append(str(exc).splitlines()[0][-300:])
-                self.cache[key] = []
-                return self.cache[key]
+                _LAKE_DOWN.set()
+                raise LakeError(f"feature view at {as_of} failed: {type(exc).__name__}: {exc}") from exc
+            if load_features.last_error and load_features.last_error not in self.errors:
+                self.errors.append(load_features.last_error)
             self.cache[key] = rows
             self.fetched += 1
             self._persist(key, rows)
@@ -241,7 +253,12 @@ class LockedSource:
 
     def execute(self, request: Any, row_limit: int | None = None) -> Any:
         with self.lock:
-            return self.inner.execute(request, row_limit=row_limit)
+            _raise_if_lake_down()
+            try:
+                return self.inner.execute(request, row_limit=row_limit)
+            except LakeError:
+                _LAKE_DOWN.set()
+                raise
 
 
 class GatedRuntime:
@@ -394,9 +411,13 @@ def _row(phase: str, round_id: str, arm: str, repeat: int, start: str, end: str,
 
 
 def _run_one(agent: Any, cfg: dict, store: SnapshotStore, **meta: Any) -> dict:
+    _raise_if_lake_down()
     try:
         report, wall = simulate(agent, cfg, store)
         return _row(report=report, wall=wall, **meta)
+    except LakeError:
+        _LAKE_DOWN.set()
+        raise
     except Exception as exc:
         return _row(report=None, wall=0, error=f"{type(exc).__name__}: {exc}", **meta)
 
@@ -662,6 +683,20 @@ def check_run_config(out: Path, config: dict, resume: bool) -> None:
     elif not resume and any((out / "rounds").glob("*.json")):
         raise SystemExit(f"{out} already has finished rounds; pass --resume or use a new --out")
     path.write_text(json.dumps(config, indent=1), encoding="utf-8")
+
+
+class RoundFailed(RuntimeError):
+    """A test or out-of-sample arm did not finish, so the month cannot be scored."""
+
+
+def check_round(round_id: str, test_rows: list[dict]) -> None:
+    failed = [row for row in test_rows if row.get("error") or row.get("net_profit") is None]
+    if failed:
+        first = failed[0]
+        raise RoundFailed(
+            f"{len(failed)} test arm(s) of {round_id} failed; first {first.get('arm')}#{first.get('repeat')}: "
+            f"{first.get('error') or 'no result'}"
+        )
 
 
 def write_outputs(out: Path, rows: list[dict], proposals: list[dict]) -> None:
@@ -1062,8 +1097,10 @@ def main() -> None:
         track.extend(payload["records"])
         proposals.extend(payload["proposals"])
         progress.log(payload["round"], "round", "skipped", reason="finished before --resume")
+    current = ""
     try:
         for spec in rounds[len(finished):]:
+            current = spec["round"]
             began = time.perf_counter()
             progress.log(spec["round"], "round", "start", explore=f"{spec['explore_start']}..{spec['explore_end']}",
                          test=f"{spec['test_start']}..{spec['test_end']}")
@@ -1078,15 +1115,26 @@ def main() -> None:
                 out, store, source, runtime_factory, symbols, spec, nb, winner, args.repeats, args.workers,
                 features, progress,
             )
+            print_sql(test_rows)
+            print_proposals(round_proposals)
+            check_round(spec["round"], test_rows)
             all_rows.extend(explore_rows + test_rows)
             track.extend(records)
             proposals.extend(round_proposals)
-            print_sql(test_rows)
-            print_proposals(round_proposals)
             write_outputs(out, all_rows, proposals)
             save_round(out, spec, nb, explore_rows + test_rows, records, round_proposals, time.perf_counter() - began)
             progress.log(spec["round"], "round", "done", seconds=round(time.perf_counter() - began, 1),
-                         notebook=nb["notebook_id"], cache_fetched=features.fetched, cache_hits=features.hits)
+                         notebook=nb["notebook_id"], cache_fetched=features.fetched, cache_hits=features.hits,
+                         reconnects=getattr(opened, "reconnects", 0))
+    except (LakeError, RoundFailed) as exc:
+        progress.log(current, "round", "failed", error=f"{type(exc).__name__}: {exc}"[:400])
+        print(
+            f"\nSTOPPED in round {current}: {type(exc).__name__}: {exc}\n"
+            f"No round file was written for {current}; finished rounds are kept in {out / 'rounds'}.\n"
+            "Fix the lake (docker ps, Test-NetConnection 127.0.0.1 -Port 10000), then rerun the same command with --resume.",
+            flush=True,
+        )
+        raise SystemExit(2) from exc
     finally:
         planner.close()
     write_outputs(out, all_rows, proposals)

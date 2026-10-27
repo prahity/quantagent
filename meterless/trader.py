@@ -16,7 +16,7 @@ from typing import Any
 
 from meterless.action import fit_orders, structure_action
 from meterless.provider import MeterlessRuntime
-from meterless.query import AnalysisSource, QueryRequest, QueryResult, column_hint
+from meterless.query import AnalysisSource, LakeError, QueryRequest, QueryResult, column_hint
 from meterless.recall import fetch_brief
 
 _REPLY = """Reply with one JSON object and no other text:
@@ -379,6 +379,8 @@ class NemotronTrader:
             return None
         try:
             return self.rule_view(request, feed)
+        except LakeError:
+            raise
         except Exception as exc:
             self._append_log(request, "rule_choices.jsonl", {"request_id": request.get("request_id"), "error": f"rule view failed: {exc}"})
             return []

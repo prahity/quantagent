@@ -70,6 +70,28 @@ def sql_error_text(raw: Any) -> str:
     return text.strip(" ;.")[:400]
 
 
+class LakeError(RuntimeError):
+    """The lake could not answer: lost connection, stopped engine, or a feature view that failed.
+
+    Distinct from an error in the agent's own SQL, which goes back to the agent as text.
+    A run that sees this must stop rather than score a month on missing data.
+    """
+
+
+# Transport and engine-down signatures. A wrong column or bad syntax never matches these.
+_TRANSPORT_ERROR = re.compile(
+    r"TTransportException|SocketException|Connection refused|connection (?:was )?(?:aborted|reset|closed)|"
+    r"Broken pipe|RejectedExecutionException|SparkContext (?:was shut down|has been shutdown|is stopped)|"
+    r"stopped SparkContext|Could not open client transport|Read timed out|No route to host|"
+    r"Communications link failure|Connection is closed|ConnectException",
+    re.IGNORECASE,
+)
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    return bool(_TRANSPORT_ERROR.search(f"{type(exc).__name__}: {exc}"))
+
+
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NOMINAL_SECONDS = {"daily": 86400, "hourly": 3600}
 _ROW_LIMIT = 30
@@ -545,6 +567,9 @@ class JdbcZetarisSource:
         self.data_version = ""
         self.feature_symbols: list[str] = []
         self._conn = None
+        self.retry_delays: tuple[float, ...] = (10.0, 30.0, 60.0)
+        self.sleep = time.sleep
+        self.reconnects = 0
         if connect:
             self._require_login()
             self._check_version(expected_version)
@@ -569,9 +594,12 @@ class JdbcZetarisSource:
         )
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _require_login(self) -> None:
         missing = [name for name, value in (("url", self._url), ("driver", self._driver), ("user", self._user)) if not value]
@@ -586,6 +614,31 @@ class JdbcZetarisSource:
         return self._conn
 
     def _fetch(self, sql: str) -> tuple[list[str], list[tuple]]:
+        """Run one statement. A dropped connection is closed, reopened, and the statement retried
+        after each delay in `retry_delays`, long enough for the container to restart."""
+        tries = len(self.retry_delays) + 1
+        for attempt in range(1, tries + 1):
+            try:
+                return self._fetch_once(sql)
+            except Exception as exc:
+                if not is_transport_error(exc):
+                    raise
+                self.close()
+                if attempt == tries:
+                    raise LakeError(
+                        f"Zetaris lake unreachable after {tries} tries: {sql_error_text(exc)[:300]}"
+                    ) from exc
+                delay = self.retry_delays[attempt - 1]
+                print(
+                    f"zetaris connection lost ({sql_error_text(exc)[:160]}); "
+                    f"reconnecting in {delay:g}s (retry {attempt}/{tries - 1})",
+                    flush=True,
+                )
+                self.sleep(delay)
+                self.reconnects += 1
+        raise AssertionError("unreachable")
+
+    def _fetch_once(self, sql: str) -> tuple[list[str], list[tuple]]:
         cur = self._connection().cursor()
         try:
             cur.execute(sql)
@@ -645,6 +698,8 @@ class JdbcZetarisSource:
             return _result(request, self.name, self.data_version, started, error=str(exc))
         try:
             columns, fetched = self._fetch(statement)
+        except LakeError:
+            raise
         except Exception as exc:
             return _result(request, self.name, self.data_version, started, error=sql_error_text(exc))
         cap = _ROW_LIMIT if row_limit is None else int(row_limit)

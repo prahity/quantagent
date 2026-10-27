@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from meterless.query import RELATION_COLUMNS, AnalysisSource, QueryRequest
+from meterless.query import RELATION_COLUMNS, AnalysisSource, LakeError, QueryRequest
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -342,14 +342,16 @@ def _python_features(source: AnalysisSource, as_of: str, symbols: list[str]) -> 
         as_of=str(as_of),
     ), row_limit=20000)
     if bars.error:
-        raise RuntimeError(bars.error)
+        raise LakeError(f"feature view at {as_of} failed: {bars.error}")
+    if filings.error:
+        raise LakeError(f"feature view filings at {as_of} failed: {filings.error}")
     by_symbol: dict[str, list[dict]] = {}
     for row in bars.rows:
         by_symbol.setdefault(str(row["symbol"]).upper(), []).append(row)
     last_filing: dict[str, str] = {}
     next_filing: dict[str, str] = {}
     day = str(as_of)[:10]
-    for row in [] if filings.error else filings.rows:
+    for row in filings.rows:
         symbol = str(row.get("symbol") or "").upper()
         available = _day_text(row.get("available_on"))
         published = _day_text(row.get("published_on"))

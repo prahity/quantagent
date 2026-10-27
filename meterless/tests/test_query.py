@@ -186,6 +186,88 @@ def test_jdbc_errors_keep_the_engine_message_only():
     assert sql_error_text(planned).endswith("[`close`]")
 
 
+_DROPPED = ("java.sql.SQLException: org.apache.thrift.transport.TTransportException: "
+            "java.net.SocketException: An established connection was aborted by the software in your host machine")
+
+
+class _FakeJdbc:
+    """Connections that fail with the given errors in order, then answer."""
+
+    def __init__(self, failures: list[str]):
+        self.failures = list(failures)
+        self.opened = 0
+        self.closed = 0
+
+    def connect(self):
+        self.opened += 1
+        jdbc = self
+
+        class Cursor:
+            description = [("close",)]
+
+            def execute(self, _sql):
+                if jdbc.failures:
+                    raise Exception(jdbc.failures.pop(0))
+
+            def fetchall(self):
+                return [(101.5,)]
+
+            def close(self):
+                pass
+
+        class Conn:
+            def cursor(self):
+                return Cursor()
+
+            def close(self):
+                jdbc.closed += 1
+
+        return Conn()
+
+
+def _jdbc_source(fake: _FakeJdbc) -> tuple[JdbcZetarisSource, list[float]]:
+    source = JdbcZetarisSource(connect=False)
+    source._connection = lambda: source._conn or setattr(source, "_conn", fake.connect()) or source._conn
+    slept: list[float] = []
+    source.sleep = slept.append
+    return source, slept
+
+
+def _bars_request() -> QueryRequest:
+    return QueryRequest(run_id="r", request_id="d1", query_id="q1", goal="g",
+                        sql="SELECT close FROM bars WHERE symbol = 'AAPL'", as_of="2024-10-01T14:30:00Z")
+
+
+def test_jdbc_reconnects_after_a_dropped_connection_and_retries():
+    fake = _FakeJdbc([_DROPPED, "Connection refused: connect"])
+    source, slept = _jdbc_source(fake)
+    result = source.execute(_bars_request())
+    assert result.error == ""
+    assert result.rows == [{"close": 101.5}]
+    assert slept == [10.0, 30.0]
+    assert fake.opened == 3 and fake.closed == 2
+    assert source.reconnects == 2
+
+
+def test_jdbc_stops_loudly_when_the_lake_stays_down():
+    from meterless.query import LakeError
+
+    fake = _FakeJdbc([_DROPPED] * 10)
+    source, slept = _jdbc_source(fake)
+    with pytest.raises(LakeError, match="unreachable after 4 tries"):
+        source.execute(_bars_request())
+    assert slept == [10.0, 30.0, 60.0]
+    assert fake.opened == 4
+
+
+def test_jdbc_sql_mistakes_go_back_to_the_agent_without_reconnecting():
+    fake = _FakeJdbc(["org.apache.hive.service.cli.HiveSQLException: <<<[UNRESOLVED_COLUMN] `ts` cannot be resolved>>>"])
+    source, slept = _jdbc_source(fake)
+    result = source.execute(_bars_request())
+    assert "UNRESOLVED_COLUMN" in result.error
+    assert slept == [] and fake.opened == 1
+
+
 def test_structure_action_keeps_orders_and_fills_ids_from_the_request():
     request = {
         "run_id": "run_real", "request_id": "decision_00007", "mode": "V1",

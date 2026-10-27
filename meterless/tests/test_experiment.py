@@ -283,16 +283,83 @@ def test_feature_cache_is_shared_saved_per_version_and_returns_identical_rows(tm
     assert experiment.FeatureCache(source, ["AAPL"], other).loaded == 0
 
 
-def test_feature_cache_keeps_a_failed_view_out_of_the_file(tmp_path, monkeypatch):
+@pytest.fixture
+def lake_up():
+    experiment._LAKE_DOWN.clear()
+    yield
+    experiment._LAKE_DOWN.clear()
+
+
+def test_a_failed_feature_view_stops_the_run_and_is_never_cached(tmp_path, monkeypatch, lake_up):
+    from meterless.query import LakeError
+
     def boom(*_args, **_kwargs):
         raise RuntimeError("lake down")
 
     monkeypatch.setattr(experiment, "load_features", boom)
     path = tmp_path / "cache.jsonl"
     cache = experiment.FeatureCache(None, ["AAPL"], path)
-    assert cache("2024-01-25T14:30:00Z") == []
-    assert cache.errors == ["lake down"]
+    with pytest.raises(LakeError, match="lake down"):
+        cache("2024-01-25T14:30:00Z")
+    assert "2024-01-25T14:30:00Z" not in cache
     assert not path.exists()
+    with pytest.raises(LakeError, match="earlier lake call"):
+        experiment.LockedSource(SqliteSource.build(tmp_path / "lake.sqlite", _bars(), _filings())).execute(
+            QueryRequest(run_id="t", request_id="t", query_id="t", goal="g", sql="SELECT 1", as_of="2024-01-25T14:30:00Z"))
+
+
+def test_load_features_raises_when_the_view_and_its_fallback_both_fail():
+    from meterless.query import LakeError, QueryResult
+
+    class Broken:
+        name = "zetaris"
+        data_version = "x"
+
+        def execute(self, request, row_limit=None):
+            return QueryResult(query_id=request.query_id, goal="", sql=request.sql, as_of=request.as_of,
+                               backend="zetaris", data_version="x", columns=[], rows=[], truncated=False,
+                               error="engine stopped", elapsed_ms=0.0)
+
+    with pytest.raises(LakeError, match="engine stopped"):
+        load_features(Broken(), "2024-01-25T14:30:00Z", ["AAPL"])
+
+
+def test_a_lake_error_in_an_arm_is_raised_not_scored(monkeypatch, lake_up):
+    from meterless.query import LakeError
+
+    def lake_fails(*_args, **_kwargs):
+        raise LakeError("Zetaris lake unreachable after 4 tries")
+
+    monkeypatch.setattr(experiment, "simulate", lake_fails)
+    with pytest.raises(LakeError):
+        experiment._run_one(None, {}, None, phase="test", round_id="2024-10", arm="best_rule", repeat=1,
+                            start="", end="", spec_id="s", parent_id=None)
+    assert experiment._LAKE_DOWN.is_set()
+
+    experiment._LAKE_DOWN.clear()
+
+    def bug(*_args, **_kwargs):
+        raise ValueError("not a lake problem")
+
+    monkeypatch.setattr(experiment, "simulate", bug)
+    row = experiment._run_one(None, {}, None, phase="test", round_id="2024-10", arm="nomem", repeat=1,
+                              start="", end="", spec_id="s", parent_id=None)
+    assert "not a lake problem" in row["error"]
+    with pytest.raises(experiment.RoundFailed, match="nomem#1"):
+        experiment.check_round("2024-10", [{"arm": "cash", "repeat": 1, "net_profit": 50.0}, row])
+    experiment.check_round("2024-10", [{"arm": "cash", "repeat": 1, "net_profit": 50.0}])
+
+
+def test_memory_agent_does_not_hide_a_lake_error_in_its_rule_view():
+    from meterless.query import LakeError
+    from meterless.trader import NemotronTrader
+
+    def view(_request, _feed):
+        raise LakeError("feature view at 2024-10-01 failed")
+
+    trader = NemotronTrader(object(), memory=5, notes="", retries=0, rule_view=view)
+    with pytest.raises(LakeError):
+        trader._rules({"request_id": "r1"}, None)
 
 
 def test_resume_restores_finished_rounds_and_refuses_changed_settings(tmp_path):
