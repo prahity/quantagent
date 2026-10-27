@@ -1,0 +1,3 @@
+arm,month,run_id,model,thinking,recall,prompt_style,return_pct,net_profit,bench_return_pct,excess_pct,max_drawdown_pct,sharpe,fills,rejections,invalid_responses,turnover,runtime_errors,notebook_chars_used,initial_cash,tokens,cost_usd
+nomem,2024-04,run_5c5325f8,nvidia/nemotron-3.5-lightning-30b-a3b,off,,,0.7456268284911971,74.56268284912039,-3.907165516845712,4.652792345336909,6.526336155984602,0.47558157572500254,3,0,0,0.9974907425183106,0,,10000,,
+memory,2024-04,run_5e030105,nvidia/nemotron-3.5-lightning-30b-a3b,off,brief,,-1.292803555175781,-129.28035551757785,-3.907165516845712,2.614361961669931,3.269773119606788,-0.7738560513908175,11,0,0,3.92063392149292,0,371,10000,,
