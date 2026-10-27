@@ -161,6 +161,10 @@ _RULES_HEADER = """
 Notebook rules run on your account and today's released features. A target is a fraction of equity; the rest is cash. The orders are what the rule itself places today, sized from your cash and holdings; an empty list means the rule holds. These figures are computed, not missing.
 """
 
+ADVICE_HEADER = """
+Advisory notebook. It summarizes deterministic backtests of trading rules on completed periods before this test month: the best rules, their later out-of-sample record, how confident the notebook is, and the market regime. It is advice only. You may use it or ignore it, and you decide orders exactly as above. If a notebook rule informs today's decision, add "cite":["<exact rule name>"] to the action JSON; otherwise add "cite":[].
+"""
+
 _RULES_TASK = """Choose one:
 (a) Apply one listed rule. Set "rule" to its exact name and copy that rule's orders for today exactly, including an empty list on a day it holds. The first rule is the notebook's recommendation; use it unless today's figures argue against it.
 (b) Apply none. Set "rule" to "none" and set "why_not" to figures shown here (today's features, the notebook's results) that make every listed rule wrong today. Low confidence alone is not a reason: the notebook weighed it when it chose the recommendation, and cash has no out-of-sample record either.
@@ -190,9 +194,14 @@ class NemotronTrader:
         prompt_style: str = "default",
         log_dir: str | Path | None = None,
         rule_view: Any = None,
+        advice: str = "",
+        advice_rules: list[str] | None = None,
     ):
         self.runtime = runtime
         self.rule_view = rule_view
+        self.advice = advice
+        self.advice_rules = list(advice_rules or [])
+        self.citations: list[dict] = []
         self.rule_choices: list[dict] = []
         self.memory = memory
         self.notes = notes
@@ -232,7 +241,11 @@ class NemotronTrader:
             prompt += _rules_text(rules, visible)
         if self.memory > 0 and self.log:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
-        return prompt
+        return prompt + self._advice_text()
+
+    def _advice_text(self) -> str:
+        """The only difference between the advisory arm and no-memory: this section, last."""
+        return ("\n" + ADVICE_HEADER + self.advice) if self.advice else ""
 
     def _visible(self, request: dict, feed: Any) -> dict:
         visible = {
@@ -316,7 +329,7 @@ class NemotronTrader:
             prompt += _rules_text(rules, visible)
         if self.memory > 0 and self.log:
             prompt += "\n" + _MEMORY_HEADER + "\n".join(json.dumps(entry) for entry in self.log)
-        return prompt
+        return prompt + self._advice_text()
 
     def _ground_reason(self, reason: str, visible: dict, found: list[QueryResult]) -> tuple[str, bool]:
         """Keep the model's reason. Flag it when it cites a number that was not in the evidence.
@@ -345,6 +358,8 @@ class NemotronTrader:
         }
         if rules is not None:
             record["rule"] = self._log_rule(parsed, request, visible, rules, action)
+        if self.advice:
+            record["cited"] = self._log_citation(parsed, request, action)
         self.repairs.append(record)
         self._append_log(request, "order_repairs.jsonl", record)
         return action
@@ -373,6 +388,32 @@ class NemotronTrader:
         self.rule_choices.append(choice)
         self._append_log(request, "rule_choices.jsonl", choice)
         return choice["rule"]
+
+    def _log_citation(self, parsed: dict, request: dict, action: dict) -> list[str]:
+        """Which notebook rules the advisory agent says it used, and which it named only in its reason."""
+        raw = parsed.get("cite")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            raw = []
+        named = [" ".join(item.split())[:80] for item in raw if isinstance(item, str) and item.strip()]
+        listed = set(self.advice_rules)
+        reason = str(action.get("reason") or "")
+        entry = {
+            "request_id": request.get("request_id"),
+            "as_of": request.get("as_of"),
+            "step": request.get("step"),
+            "cite": named,
+            "cited_rules": [name for name in named if name in listed],
+            "unknown": [name for name in named if name not in listed],
+            "cite_missing": "cite" not in parsed,
+            "named_in_reason": [name for name in self.advice_rules if name and name in reason],
+            "orders": _order_keys(action.get("orders")),
+            "reason": reason,
+        }
+        self.citations.append(entry)
+        self._append_log(request, "advice_citations.jsonl", entry)
+        return entry["cited_rules"]
 
     def _rules(self, request: dict, feed: Any) -> list[dict] | None:
         if self.rule_view is None:

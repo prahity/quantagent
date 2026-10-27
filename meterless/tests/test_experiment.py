@@ -391,6 +391,79 @@ def test_resume_restores_finished_rounds_and_refuses_changed_settings(tmp_path):
     assert text == ["round,explore_round,nemotron,fallback,propose_calls", f"{rounds[0]['round']},1,10,2,2"]
 
 
+def test_2025_validation_rounds_roll_explore_forward_and_stop_before_each_test_month():
+    rounds = experiment.month_rounds("2024-01", "2025-01..2025-06")
+    assert [spec["round"] for spec in rounds] == ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"]
+    assert all(spec["explore_start"] == "2024-01-01" for spec in rounds)
+    assert rounds[0]["explore_end"] == "2024-12-31" and rounds[0]["test_start"] == "2025-01-01"
+    assert rounds[2]["explore_end"] == "2025-02-28" and rounds[2]["test_end"] == "2025-03-31"
+    for spec in rounds:
+        assert spec["explore_end"] < spec["test_start"]
+        experiment.assert_allowed_years(spec["explore_start"], spec["test_end"], "validation")
+        with pytest.raises(ValueError):
+            experiment.assert_allowed_years(spec["explore_start"], spec["test_end"], "")
+    with pytest.raises(ValueError):
+        experiment.assert_allowed_years("2025-01-01", "2026-01-31", "validation")
+    assert experiment.rolling_rounds(2024)[0]["round"] == "2024-04"
+
+
+def _advisory_nb(track: list[dict]) -> dict:
+    from meterless.explore_notebook import rule_params
+
+    top = {
+        "rank": 1, "name": "mom_5_t2", "spec_id": "s1", "params": rule_params(_spec("mom_5_t2", "momentum", 5)),
+        "twr": 18.7, "excess_pp": -1.2, "max_drawdown": 9.0, "turnover": 40.0, "avg_invested_pct": 55.0,
+        "daily_excess_t": 1.1, "oos": [], "same_trades_as": ["mom_5_t2_copy"], "confidence": {"level": "low", "basis": "t 1.1"},
+    }
+    worst = {**top, "rank": 12, "name": "bad_rule", "why": ["lagged"]}
+    return {
+        "notebook_id": "nb-2025-02-r3-a1b2", "parent_id": "nb-2025-02-r2", "explore_start": "2024-01-01",
+        "explore_end": "2025-01-31", "sessions": 273, "n_specs": 36, "n_distinct": 20,
+        "market": {"trend": "up", "equal_weight_return_pct": 20.0, "volatility": "normal", "mean_ann_vol_pct": 18.0,
+                   "symbols": {"SPY": {"return_pct": 22.0, "ann_vol_pct": 12.0, "max_drawdown_pct": 8.0}}},
+        "buy_and_hold": {"twr": 25.0, "max_drawdown": 10.0}, "cash_twr": 5.0,
+        "top": [top], "worst": [worst], "track_record": track,
+        "recommendation": {"rule": "mom_5_t2", "confidence": {"level": "low", "basis": "t 1.1"}, "instruction": "Apply mom_5_t2 as written."},
+    }
+
+
+def test_advisory_notebook_is_advice_with_rules_record_confidence_and_regime():
+    from meterless import explore_notebook
+
+    track = [{"test_month": "2025-01", "name": "mom_5_t2", "explore_rank": 1, "twr": 1.0, "bench_twr": 2.0, "excess_pp": -1.0}]
+    nb = _advisory_nb(track)
+    text = explore_notebook.advisory_text(nb)
+    assert "Market regime: trend up" in text
+    assert "1. mom_5_t2 [s1]" in text and "Confidence low" in text
+    assert "2025-01 mom_5_t2 (explore rank 1)" in text
+    assert "bad_rule" not in text and "Apply mom_5_t2" not in text and "What to do" not in text
+    assert not experiment.leaks_test_window(text, "2025-02-01")
+    assert experiment.leaks_test_window(text, "2025-01-15")
+    assert explore_notebook.advice_rule_names(nb) == ["mom_5_t2", "mom_5_t2_copy"]
+
+
+def test_dry_run_counts_the_advisory_arm_only_when_asked():
+    rounds = experiment.month_rounds("2024-01", "2025-01..2025-02")
+    base = experiment.planned_llm(rounds, 3, 2, [252, 273], [21, 19])
+    advisory = experiment.planned_llm(rounds, 3, 2, [252, 273], [21, 19],
+                                      arms=experiment._DEFAULT_ARMS + ("memory_advisory",))
+    assert base["advisory_decision_calls"] == 0
+    assert advisory["advisory_decision_calls"] == round(40 * 2 * experiment._ADVISORY_CALLS_PER_DECISION)
+    assert advisory["llm_calls"] == base["llm_calls"] + advisory["advisory_decision_calls"]
+    assert advisory["estimated_test_model_seconds"] > base["estimated_test_model_seconds"]
+
+
+def test_resume_treats_an_older_config_as_the_default_arms(tmp_path):
+    import json
+
+    old = {"symbols": ["AAPL"], "rounds": ["2024-04"], "explore_rounds": 3, "specs": 12, "repeats": 2,
+           "model": "m", "thinking": "off", "data_version": "snap-a"}
+    (tmp_path / "run_config.json").write_text(json.dumps(old), encoding="utf-8")
+    experiment.check_run_config(tmp_path, {**old, "arms": list(experiment._DEFAULT_ARMS)}, resume=True)
+    with pytest.raises(SystemExit, match="arms"):
+        experiment.check_run_config(tmp_path, {**old, "arms": list(experiment._DEFAULT_ARMS) + ["memory_advisory"]}, resume=True)
+
+
 def test_progress_log_has_round_phase_and_elapsed(tmp_path):
     import json
 

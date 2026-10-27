@@ -171,6 +171,94 @@ def test_memory_agent_names_a_notebook_rule_and_it_is_logged(tmp_path):
     assert logged["weights_before"] == {"cash": 1.0}
 
 
+class _FeatureSource:
+    name = "stub"
+    data_version = "stub"
+    from meterless.query import SCHEMA as schema_text
+
+    def execute(self, request, row_limit=None):
+        from meterless.query import QueryResult
+
+        return QueryResult(query_id=request.query_id, goal=request.goal, sql=request.sql, as_of=request.as_of,
+                           backend="stub", data_version="stub", columns=["symbol", "ret_21"],
+                           rows=[{"symbol": "AAPL", "ret_21": 0.031}], truncated=False, error="", elapsed_ms=1.0)
+
+
+def _two_step_runtime(prompts: list[str], cite: list[str] | None):
+    replies = [
+        json.dumps({"goal": "trend", "sql": "SELECT symbol, ret_21 FROM features"}),
+        json.dumps({"orders": [], "reason": "mom_5_t2 is flat today", **({"cite": cite} if cite is not None else {})}),
+    ]
+
+    class Runtime:
+        def complete(self, content: str, max_tokens: int | None = None) -> str:
+            prompts.append(content)
+            return replies[len(prompts) - 1]
+
+    return Runtime()
+
+
+def _decision_request() -> dict:
+    return {
+        "run_id": "run", "request_id": "decision_00001", "mode": "V1", "as_of": "2025-01-03T14:30:00Z", "step": 1,
+        "window_start": "2025-01-03T14:30:00Z", "window_end": "2025-01-06T14:30:00Z",
+        "account": {"cash": 10000, "equity": 10000, "positions": []},
+        "data": {"symbols": ["AAPL", "MSFT", "SPY"]},
+    }
+
+
+_ADVICE = ("Explore window 2024-01-01 to 2024-12-31, 252 sessions.\nTop rules (explore window):\n"
+           "1. mom_5_t2 [s1]: momentum lookback 5. Confidence low.\nNotebook's own pick: mom_5_t2 (confidence low).")
+
+
+def test_memory_advisory_prompt_is_the_nomem_prompt_plus_the_notebook_section(tmp_path):
+    from meterless.trader import ADVICE_HEADER
+
+    nomem_prompts: list[str] = []
+    advisory_prompts: list[str] = []
+    nomem = NemotronTrader(_two_step_runtime(nomem_prompts, None), memory=0, notes="", retries=0,
+                           source=_FeatureSource(), recall="sql", log_dir=tmp_path / "nomem")
+    advisory = NemotronTrader(_two_step_runtime(advisory_prompts, ["mom_5_t2"]), memory=0, notes="", retries=0,
+                              source=_FeatureSource(), recall="sql", log_dir=tmp_path / "advisory",
+                              advice=_ADVICE, advice_rules=["mom_5_t2", "relstr_21_s2"])
+    nomem_action = nomem.decide(_decision_request())
+    advisory_action = advisory.decide(_decision_request())
+
+    section = "\n" + ADVICE_HEADER + _ADVICE
+    suffix = "\nReply with the action JSON only."
+    assert len(nomem_prompts) == len(advisory_prompts) == 2
+    for plain, advised in zip(nomem_prompts, advisory_prompts):
+        if plain.endswith(suffix):
+            assert advised == plain[: -len(suffix)] + section + suffix
+        else:
+            assert advised == plain + section
+    assert "Notebook rules run on your account" not in advisory_prompts[0]
+    assert "Strategy notebook" not in advisory_prompts[0]
+    assert "cite" not in nomem_prompts[0]
+    assert "cite" not in advisory_action and nomem_action["orders"] == advisory_action["orders"] == []
+
+    logged = json.loads((tmp_path / "advisory" / "advice_citations.jsonl").read_text().splitlines()[-1])
+    assert logged["cited_rules"] == ["mom_5_t2"] and logged["unknown"] == []
+    assert logged["named_in_reason"] == ["mom_5_t2"]
+    assert not (tmp_path / "nomem" / "advice_citations.jsonl").exists()
+
+
+def test_memory_advisory_logs_unknown_and_missing_citations(tmp_path):
+    prompts: list[str] = []
+    trader = NemotronTrader(_two_step_runtime(prompts, ["made_up_rule"]), source=_FeatureSource(), recall="sql",
+                            log_dir=tmp_path, advice=_ADVICE, advice_rules=["mom_5_t2"])
+    trader.decide(_decision_request())
+    logged = json.loads((tmp_path / "advice_citations.jsonl").read_text().splitlines()[-1])
+    assert logged["cited_rules"] == [] and logged["unknown"] == ["made_up_rule"]
+
+    prompts.clear()
+    trader = NemotronTrader(_two_step_runtime(prompts, None), source=_FeatureSource(), recall="sql",
+                            log_dir=tmp_path / "missing", advice=_ADVICE, advice_rules=["mom_5_t2"])
+    trader.decide(_decision_request())
+    logged = json.loads((tmp_path / "missing" / "advice_citations.jsonl").read_text().splitlines()[-1])
+    assert logged["cite_missing"] is True and logged["cited_rules"] == []
+
+
 def test_jdbc_errors_keep_the_engine_message_only():
     from meterless.query import sql_error_text
 

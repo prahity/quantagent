@@ -58,10 +58,19 @@ _MEMORY_CALLS_PER_DECISION = 1.15  # 25 calls for 22 decisions: the rule orders 
 _NOMEM_CALLS_PER_DECISION = 2.0  # SQL, then the action
 _MEMORY_SECONDS_PER_CALL = 2.9  # arm wall / calls: model latency plus SQL and simulator steps
 _NOMEM_SECONDS_PER_CALL = 2.2
+# The advisory arm is the no-memory agent plus the notebook section (600 to 1200 tokens on the 2024 notebooks).
+_ADVISORY_TOKENS = (_NOMEM_TOKENS[0] + 1000, 160)
+_ADVISORY_CALLS_PER_DECISION = _NOMEM_CALLS_PER_DECISION
+_ADVISORY_SECONDS_PER_CALL = 2.4
 _SECONDS_PER_FEATURE_DAY = 2.5  # one JDBC feature view per session (measured 2.1 to 3.7)
-_BACKTEST_SECONDS_PER_SESSION = 0.08  # one rule over one session, per worker
+_BACKTEST_SECONDS_PER_SESSION = 0.126  # one rule over one session, per worker (rolling-2024, Apr-Dec)
+# Test arms finished 1.96x slower than calls / LLM concurrency on rolling-2024: each arm decides in
+# sequence, so the slowest arm sets the wall, and SQL and simulator steps sit between calls.
+_TEST_ARM_WALL_FACTOR = 1.96
 _CASH_RATE = 0.05
-_ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash")
+_ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash", "memory_advisory")
+_DEFAULT_ARMS = ("memory", "nomem", "best_rule", "buy_and_hold", "cash")
+_RESUME_DEFAULTS = {"arms": list(_DEFAULT_ARMS)}
 _CSV_FIELDS = [
     "round", "phase", "arm", "repeat", "window_start", "window_end", "spec_id", "parent_id", "run_id",
     "net_profit", "twr", "max_drawdown", "sharpe", "turnover", "fills", "rejections",
@@ -77,7 +86,7 @@ def _raise_if_lake_down() -> None:
 
 
 _PROPOSAL_FIELDS = ["round", "explore_round", "nemotron", "fallback", "propose_calls"]
-_RESUME_KEYS = ("symbols", "rounds", "explore_rounds", "specs", "repeats", "model", "thinking", "data_version")
+_RESUME_KEYS = ("symbols", "rounds", "explore_rounds", "specs", "repeats", "model", "thinking", "data_version", "arms")
 
 _PROPOSE = """You write trading rules for a simulator. The goal is to maximize total profit: final equity minus starting cash minus deposits. Cash left uninvested earns the account's cash rate. You cannot create cash.
 Each rule is scored later by a deterministic runner over the explore window only. You do not see the test window.
@@ -135,9 +144,36 @@ def rolling_rounds(year: int = 2024) -> list[dict]:
     return rounds
 
 
+def month_rounds(explore_start: str, test_span: str) -> list[dict]:
+    """One round per test month in `YYYY-MM..YYYY-MM`. Explore runs from `explore_start` (YYYY-MM)
+    to the last day before that test month, so it grows by one month each round."""
+    first, last = parse_window(test_span)
+    start, _ = month_window(explore_start)
+    rounds = []
+    year, month = int(first[:4]), int(first[5:7])
+    while f"{year:04d}-{month:02d}" <= last[:7]:
+        test_start, test_end = month_window(f"{year:04d}-{month:02d}")
+        explore_end = date.fromordinal(date.fromisoformat(test_start).toordinal() - 1).isoformat()
+        if explore_end < start:
+            raise ValueError(f"explore start {explore_start} is not before test month {test_start[:7]}")
+        rounds.append({
+            "round": test_start[:7],
+            "explore_start": start,
+            "explore_end": explore_end,
+            "test_start": test_start,
+            "test_end": test_end,
+        })
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return rounds
+
+
 def assert_allowed_years(start: str, end: str, split: str) -> None:
-    """2025 and 2026 stay closed unless a later split is requested on purpose."""
-    if split in ("validation", "test"):
+    """2025 and 2026 stay closed unless a later split is requested on purpose. Validation stops at 2025."""
+    if split == "validation":
+        if date.fromisoformat(end).year > 2025:
+            raise ValueError("--split validation ends in 2025; 2026 needs --split test")
+        return
+    if split == "test":
         return
     if date.fromisoformat(start).year > 2024 or date.fromisoformat(end).year > 2024:
         raise ValueError("2025 and 2026 stay closed unless --split validation or --split test")
@@ -525,24 +561,29 @@ def _spec_dump(out: Path, spec: StrategySpec) -> None:
 
 def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: list[int], test_days: list[int],
                  llm_concurrency: int = 2, specs_per_round: int = 12, workers: int = 4,
-                 unique_days: int | None = None) -> dict:
+                 unique_days: int | None = None, arms: tuple[str, ...] = _DEFAULT_ARMS) -> dict:
     """Count model calls and wall time. Rule backtests, buy-and-hold, and cash call no model.
 
     A no-memory decision is two calls (SQL, then the action). The memory agent usually
-    answers in one because the rule orders are in its prompt. The notebook calls no model.
+    answers in one because the rule orders are in its prompt. The advisory agent is the
+    no-memory agent with a longer prompt. The notebook calls no model.
     """
     propose = round(len(rounds) * n_rounds * _PROPOSE_CALLS_PER_ROUND)
     decisions = sum(test_days) * repeats
-    memory = round(decisions * _MEMORY_CALLS_PER_DECISION)
-    nomem = round(decisions * _NOMEM_CALLS_PER_DECISION)
-    calls = propose + memory + nomem
-    prompt = propose * _PROPOSE_TOKENS[0] + memory * _MEMORY_TOKENS[0] + nomem * _NOMEM_TOKENS[0]
-    completion = propose * _PROPOSE_TOKENS[1] + memory * _MEMORY_TOKENS[1] + nomem * _NOMEM_TOKENS[1]
+    memory = round(decisions * _MEMORY_CALLS_PER_DECISION) if "memory" in arms else 0
+    nomem = round(decisions * _NOMEM_CALLS_PER_DECISION) if "nomem" in arms else 0
+    advisory = round(decisions * _ADVISORY_CALLS_PER_DECISION) if "memory_advisory" in arms else 0
+    calls = propose + memory + nomem + advisory
+    prompt = (propose * _PROPOSE_TOKENS[0] + memory * _MEMORY_TOKENS[0] + nomem * _NOMEM_TOKENS[0]
+              + advisory * _ADVISORY_TOKENS[0])
+    completion = (propose * _PROPOSE_TOKENS[1] + memory * _MEMORY_TOKENS[1] + nomem * _NOMEM_TOKENS[1]
+                  + advisory * _ADVISORY_TOKENS[1])
     in_rate, out_rate = token_rates()
     gate = max(int(llm_concurrency), 1)
     feature_days = sum(explore_days) + sum(test_days)
     propose_seconds = propose * _PROPOSE_SECONDS_PER_CALL
-    test_seconds = (memory * _MEMORY_SECONDS_PER_CALL + nomem * _NOMEM_SECONDS_PER_CALL) / gate
+    test_seconds = (memory * _MEMORY_SECONDS_PER_CALL + nomem * _NOMEM_SECONDS_PER_CALL
+                    + advisory * _ADVISORY_SECONDS_PER_CALL) / gate * _TEST_ARM_WALL_FACTOR
     backtest_seconds = sum(explore_days) * n_rounds * specs_per_round * _BACKTEST_SECONDS_PER_SESSION / max(workers, 1)
     feature_seconds = feature_days * _SECONDS_PER_FEATURE_DAY
     cached_seconds = (unique_days if unique_days is not None else feature_days) * _SECONDS_PER_FEATURE_DAY
@@ -555,6 +596,8 @@ def planned_llm(rounds: list[dict], n_rounds: int, repeats: int, explore_days: l
         "notebook_calls": 0,
         "memory_decision_calls": memory,
         "nomem_decision_calls": nomem,
+        "advisory_decision_calls": advisory,
+        "arms": list(arms),
         "rule_buyhold_cash_calls": 0,
         "llm_calls": calls,
         "estimated_prompt_tokens": prompt,
@@ -591,6 +634,7 @@ def print_plan(plan: dict) -> None:
     print(
         f"model calls {plan['llm_calls']}: propose {plan['propose_calls']}  notebook {plan['notebook_calls']}  "
         f"memory {plan['memory_decision_calls']}  nomem {plan['nomem_decision_calls']}  "
+        f"memory_advisory {plan['advisory_decision_calls']}  "
         f"rule/buy-and-hold/cash {plan['rule_buyhold_cash_calls']}  (repeats {plan['repeats']}, "
         f"{plan['explore_rounds_each']} explore rounds per month, LLM concurrency {plan['llm_concurrency']})",
         flush=True,
@@ -677,7 +721,8 @@ def check_run_config(out: Path, config: dict, resume: bool) -> None:
     path = out / "run_config.json"
     if resume and path.exists():
         saved = json.loads(path.read_text(encoding="utf-8"))
-        changed = [key for key in _RESUME_KEYS if saved.get(key) != config.get(key)]
+        changed = [key for key in _RESUME_KEYS
+                   if saved.get(key, _RESUME_DEFAULTS.get(key)) != config.get(key, _RESUME_DEFAULTS.get(key))]
         if changed:
             raise SystemExit(f"--resume settings differ from {path}: {', '.join(changed)}")
     elif not resume and any((out / "rounds").glob("*.json")):
@@ -728,7 +773,8 @@ def _svg(path: Path, title: str, body: str, width: int, height: int) -> None:
 def write_charts(directory: Path, rows: list[dict]) -> None:
     test_rows = [row for row in rows if row.get("phase") == "test" and row.get("net_profit") is not None]
     months = sorted({row["round"] for row in test_rows})
-    colors = {"memory": "#1f4e79", "nomem": "#6fa8dc", "best_rule": "#b45f06", "buy_and_hold": "#38761d", "cash": "#666666"}
+    colors = {"memory": "#1f4e79", "nomem": "#6fa8dc", "best_rule": "#b45f06", "buy_and_hold": "#38761d", "cash": "#666666",
+              "memory_advisory": "#8e44ad"}
     width, height = 960, 420
     if not months:
         _svg(directory / "net_profit.svg", "Net profit by arm", "", width, height)
@@ -753,15 +799,16 @@ def write_charts(directory: Path, rows: list[dict]) -> None:
             y0, y1 = sorted((y, zero))
             parts.append(f'<rect x="{x}" y="{y0:.1f}" width="18" height="{max(y1 - y0, 1):.1f}" fill="{colors[arm]}"/>')
         parts.append(f'<text x="{left + month_index * group}" y="390" font-size="12" font-family="sans-serif">{month}</text>')
+    present = [arm for arm in _ARMS if any(row["arm"] == arm for row in test_rows)]
     legend = "".join(
         f'<rect x="{left + index * 130}" y="40" width="12" height="12" fill="{colors[arm]}"/>'
         f'<text x="{left + 16 + index * 130}" y="50" font-size="12" font-family="sans-serif">{arm}</text>'
-        for index, arm in enumerate(_ARMS)
+        for index, arm in enumerate(present)
     )
     _svg(directory / "net_profit.svg", "Net profit by arm", legend + "".join(parts), width, height)
 
     lines = []
-    for arm, color in (("memory", colors["memory"]), ("nomem", colors["nomem"])):
+    for arm, color in ((arm, colors[arm]) for arm in ("memory", "nomem", "memory_advisory")):
         cumulative = 0.0
         points = []
         for index, month in enumerate(months):
@@ -778,7 +825,7 @@ def write_charts(directory: Path, rows: list[dict]) -> None:
         coords = " ".join(f"{x:.1f},{bottom - (value / hi) * (bottom - top) * 0.5 - (bottom - top) * 0.25:.1f}" for x, value in points)
         lines.append(f'<polyline fill="none" stroke="{color}" stroke-width="2" points="{coords}"/>')
         lines.append(
-            f'<text x="{left}" y="{70 + (0 if arm == "memory" else 18)}" font-size="12" font-family="sans-serif" fill="{color}">{arm}</text>'
+            f'<text x="{left}" y="{70 + 18 * ("memory", "nomem", "memory_advisory").index(arm)}" font-size="12" font-family="sans-serif" fill="{color}">{arm}</text>'
         )
     _svg(directory / "cumulative_excess.svg", "Cumulative excess versus buy-and-hold", "".join(lines), width, height)
 
@@ -894,7 +941,7 @@ def run_explore(out: Path, store: SnapshotStore, source: Any, runtime: Any, symb
 
 def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any, symbols: list[str], spec: dict,
              nb: dict, best: dict, repeats: int, workers: int, features: FeatureCache | None = None,
-             progress: Progress | None = None) -> tuple[list[dict], list[dict]]:
+             progress: Progress | None = None, arms: tuple[str, ...] | None = None) -> tuple[list[dict], list[dict]]:
     """Return the test rows and the out-of-sample records of this round's top explore rules."""
     start, end = spec["test_start"], spec["test_end"]
     progress = progress or Progress(out / "progress.jsonl")
@@ -908,17 +955,30 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
         fetched_before = features.fetched
         features.prefetch(times)
         info["fetched"] = features.fetched - fetched_before
+    arms = tuple(arms or _DEFAULT_ARMS)
+    advice = explore_notebook.advisory_text(nb)
+    if leaks_test_window(advice, start):
+        raise ValueError("advisory notebook contains a date from the test window")
     spec_payload = json.loads((out / "specs" / f"{best['spec_id']}.json").read_text(encoding="utf-8"))
     jobs: list[tuple[str, int, Any, str]] = []
     for repeat in range(1, repeats + 1):
-        view = explore_notebook.rule_view(explore_notebook.playbook(nb), features, _targets, RuleRunner)
-        memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="sql", rule_view=view)
-        nomem = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=source, recall="sql")
-        jobs.append(("memory", repeat, memory, notebook_id))
-        jobs.append(("nomem", repeat, nomem, ""))
+        if "memory" in arms:
+            view = explore_notebook.rule_view(explore_notebook.playbook(nb), features, _targets, RuleRunner)
+            memory = NemotronTrader(runtime_factory(), memory=5, notes=test_notes, retries=0, source=source, recall="sql", rule_view=view)
+            jobs.append(("memory", repeat, memory, notebook_id))
+        if "nomem" in arms:
+            nomem = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=source, recall="sql")
+            jobs.append(("nomem", repeat, nomem, ""))
+        if "memory_advisory" in arms:
+            advisory = NemotronTrader(runtime_factory(), memory=0, notes="", retries=0, source=source, recall="sql",
+                                      advice=advice, advice_rules=explore_notebook.advice_rule_names(nb))
+            jobs.append(("memory_advisory", repeat, advisory, notebook_id))
     jobs.append(("best_rule", 1, RuleRunner(spec_payload, features), best["spec_id"]))
+    if "buy_and_hold" not in arms:
+        raise ValueError("buy_and_hold is the benchmark for every out-of-sample record; keep it in --arms")
     jobs.append(("buy_and_hold", 1, AccumulatingBuyAndHold(), "buy_and_hold"))
-    jobs.append(("cash", 1, CashOnlyAgent(), "cash"))
+    if "cash" in arms:
+        jobs.append(("cash", 1, CashOnlyAgent(), "cash"))
     for entry in nb["top"]:
         if entry["spec_id"] != best["spec_id"]:
             jobs.append((f"oos_rank{entry['rank']}", 1, RuleRunner(entry["spec"], features), entry["spec_id"]))
@@ -929,11 +989,12 @@ def run_test(out: Path, store: SnapshotStore, source: Any, runtime_factory: Any,
         row = _run_one(
             agent, cfg, store,
             phase="oos" if arm.startswith("oos_") else "test", round_id=spec["round"], arm=arm, repeat=repeat,
-            start=start, end=end, spec_id=parent or arm, parent_id=notebook_id if arm == "memory" else parent,
+            start=start, end=end, spec_id=parent or arm, parent_id=notebook_id if arm.startswith("memory") else parent,
         )
         if isinstance(agent, NemotronTrader):
             row.update(sql_stats(row.get("run_id") or ""))
             row.update(rule_stats(row.get("run_id") or ""))
+            row.update(advice_stats(row.get("run_id") or ""))
         _save(out, "result", row)
         print(
             f"test {arm}#{repeat} net {row.get('net_profit')} twr {row.get('twr')} "
@@ -986,6 +1047,21 @@ def rule_stats(run_id: str) -> dict:
     return {"rule_counts": counts}
 
 
+def advice_stats(run_id: str) -> dict:
+    rows = explore_notebook.read_jsonl(SIM / "runs" / run_id / "advice_citations.jsonl")
+    if not rows:
+        return {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        for name in row.get("cited_rules") or ["(none)"]:
+            counts[name] = counts.get(name, 0) + 1
+    return {
+        "advice_decisions": len(rows),
+        "advice_cited_days": sum(1 for row in rows if row.get("cited_rules")),
+        "advice_counts": counts,
+    }
+
+
 def print_table(rows: list[dict]) -> None:
     test_rows = [row for row in rows if row.get("phase") == "test"]
     print(f"{'arm':16} {'rep':3} {'net_profit':>12} {'twr':>8} {'max_dd':>8} {'sharpe':>8} {'turnover':>8} {'fills':>5} {'rej':>4} {'tokens':>8} {'cost':>8} {'wall_s':>8}", flush=True)
@@ -1023,9 +1099,22 @@ def main() -> None:
     parser.add_argument("--model", default="")
     parser.add_argument("--thinking", default="off", choices=["on", "off"])
     parser.add_argument("--resume", action="store_true", help="skip rounds already saved under OUT/rounds")
+    parser.add_argument("--test-months", default="",
+                        help="rolling test months YYYY-MM..YYYY-MM; explore runs from --explore-start to the day before each")
+    parser.add_argument("--explore-start", default="2024-01", help="first explore month for --test-months")
+    parser.add_argument("--arms", default=",".join(_DEFAULT_ARMS),
+                        help=f"test arms, comma separated, from {','.join(_ARMS)}")
     args = parser.parse_args()
     symbols = [part.strip().upper() for part in args.symbols.split(",") if part.strip()]
-    if args.rolling:
+    arms = tuple(dict.fromkeys(part.strip().lower().replace("-", "_") for part in args.arms.split(",") if part.strip()))
+    unknown = [arm for arm in arms if arm not in _ARMS]
+    if unknown or "buy_and_hold" not in arms or "best_rule" not in arms:
+        raise SystemExit(f"--arms must be from {', '.join(_ARMS)} and include best_rule and buy_and_hold (got {args.arms})")
+    if args.test_months and args.rolling:
+        raise SystemExit("use --rolling or --test-months, not both")
+    if args.test_months:
+        rounds = month_rounds(args.explore_start, args.test_months)
+    elif args.rolling:
         rounds = rolling_rounds(2024)
     else:
         explore_start, explore_end = parse_window(args.explore)
@@ -1052,7 +1141,7 @@ def main() -> None:
     backend = os.environ.get("ANALYSIS_BACKEND", "zetaris").strip().lower()
     on_disk = len(distinct & set(FeatureCache(None, symbols, feature_cache_path(backend, store.data_version, symbols)).cache))
     plan = planned_llm(rounds, args.rounds, args.repeats, explore_days, test_days, args.llm_concurrency,
-                       args.specs, args.workers, len(distinct) - on_disk)
+                       args.specs, args.workers, len(distinct) - on_disk, arms)
     plan["feature_days_on_disk"] = on_disk
     if args.dry_run:
         print_plan(plan)
@@ -1081,6 +1170,8 @@ def main() -> None:
         "backend": opened.name,
         "llm_concurrency": args.llm_concurrency,
         "workers": args.workers,
+        "arms": list(arms),
+        "split": args.split,
     }, args.resume)
     features = FeatureCache(source, symbols, feature_cache_path(opened.name, store.data_version, symbols))
     print(f"feature cache {features.path} ({features.loaded} sessions on disk)", flush=True)
@@ -1113,7 +1204,7 @@ def main() -> None:
             print(f"best explore spec {winner['spec_id']} net {winner.get('net_profit')}", flush=True)
             test_rows, records = run_test(
                 out, store, source, runtime_factory, symbols, spec, nb, winner, args.repeats, args.workers,
-                features, progress,
+                features, progress, arms,
             )
             print_sql(test_rows)
             print_proposals(round_proposals)
@@ -1151,7 +1242,9 @@ def print_sql(rows: list[dict]) -> None:
             f"sql {row['arm']}#{row['repeat']}: {row['sql_ok']}/{row['sql_queries']} queries ran; "
             f"first query ran on {row['sql_first_try_ok']}/{row['sql_decisions']} decisions; "
             f"{row['sql_decisions_answered']}/{row['sql_decisions']} decisions got data; repairs {row['sql_repairs']}"
-            + (f"; rules {row['rule_counts']}" if row.get("rule_counts") else ""),
+            + (f"; rules {row['rule_counts']}" if row.get("rule_counts") else "")
+            + (f"; cited a notebook rule on {row['advice_cited_days']}/{row['advice_decisions']} decisions {row['advice_counts']}"
+               if row.get("advice_decisions") else ""),
             flush=True,
         )
 

@@ -361,6 +361,54 @@ def render_notebook(nb: dict) -> str:
     return "\n".join(lines)
 
 
+def advisory_text(nb: dict) -> str:
+    """The notebook as advice: market regime, top rules with confidence, and their out-of-sample record.
+
+    Same facts the memory arm reads, without the worst-rule list or an instruction to follow a rule.
+    """
+    market = nb["market"]
+    bh = nb["buy_and_hold"]
+    lines = [
+        f"Explore window {nb['explore_start']} to {nb['explore_end']}, {nb['sessions']} sessions, "
+        f"{nb['n_specs']} rules tested, {nb['n_distinct']} with distinct trades.",
+        f"Market regime: trend {market['trend']} (equal-weight {market['equal_weight_return_pct']}%), "
+        f"volatility {market['volatility']} (mean {market['mean_ann_vol_pct']}% annualized).",
+    ]
+    for symbol, item in market["symbols"].items():
+        lines.append(f"- {symbol}: {item['return_pct']:+.2f}%, vol {item['ann_vol_pct']}%, max drawdown {item['max_drawdown_pct']:.2f}%")
+    lines += [
+        f"Buy-and-hold TWR {bh['twr']:.2f}%, drawdown {bh['max_drawdown']:.2f}%. Cash TWR {nb['cash_twr']:.2f}%.",
+        "Top rules (explore window):",
+    ]
+    lines += [_rule_line(item) for item in nb["top"]]
+    lines.append("Out-of-sample record (test months finished before this one):")
+    if nb["track_record"]:
+        for item in nb["track_record"]:
+            lines.append(
+                f"- {item['test_month']} {item['name']} (explore rank {item['explore_rank']}): test TWR {item['twr']:.2f}%, "
+                f"buy-and-hold {item['bench_twr']:.2f}%, excess {item['excess_pp']:+.2f} pp"
+            )
+    else:
+        lines.append("- none yet.")
+    rec = nb["recommendation"]
+    lines.append(
+        f"Notebook's own pick: {rec['rule']} (confidence {rec['confidence']['level']}). {rec['confidence']['basis']}"
+    )
+    return "\n".join(lines)
+
+
+def advice_rule_names(nb: dict) -> list[str]:
+    """Names the advisory agent can cite: top rules, their same-trade aliases, and rules in the track record."""
+    names: list[str] = []
+    for item in nb["top"]:
+        names += [item["name"], *item.get("same_trades_as", [])]
+    names += [item["name"] for item in nb["track_record"]]
+    rec = nb["recommendation"].get("rule")
+    if rec:
+        names.append(rec)
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def _rule_line(item: dict) -> str:
     t = "n/a" if item["daily_excess_t"] is None else f"{item['daily_excess_t']:.2f}"
     oos = item["oos"]
