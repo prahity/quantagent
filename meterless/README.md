@@ -22,6 +22,13 @@ python -m meterless --say "Reply with one sentence confirming this connection wo
 
 `NemotronTrader` asks the model for orders and a reason. `meterless/action.py` copies `run_id`, `request_id`, `mode`, and the window from the simulator request, drops extra fields, and shrinks a buy that would exceed cash or `max_position_pct_equity`. A reply that is not JSON is a hold. The model does not set the fill price.
 
+Optional [Exa market research](../research/README.md) adds company news to every
+trader memory mode. Run `python -m research collect` from the repository root,
+then pass `--research-archive` to `runner.py` or `trial.py`, or set
+`EXA_RESEARCH_ARCHIVE` to an absolute path. Only evidence released by the
+simulator's cutoff is supplied. Exa keys are used by the collector, never sent
+to Nightshift or the model.
+
 ## Recommended arms for integration
 
 `simulator/trial.py` defaults to the best Meterless memory setup from the Feb–Apr 2024 bakeoff, run side by side with no-memory:

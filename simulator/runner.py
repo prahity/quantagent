@@ -97,6 +97,10 @@ def cmd_run(args) -> None:
     if args.agent == "nemotron":
         summary["model"] = agent.runtime.model
         summary["memory"] = agent.memory
+        from research.archive import write_research_audit
+
+        write_research_audit(agent, ROOT / "runs" / report["run_id"])
+        summary["research_sources_used"] = sum(len(row["sources"]) for row in agent.research_log)
     print(json.dumps(summary, indent=2))
 
 
@@ -105,10 +109,11 @@ def _nemotron(args):
     sys.path.insert(0, str(ROOT.parent))
     from meterless.provider import MeterlessRuntime, TOKEN_SETTING, load_settings
     from meterless.trader import NemotronTrader
+    from research.archive import open_research_archive
 
     settings = load_settings()
     runtime = MeterlessRuntime(settings["base_url"], settings[TOKEN_SETTING], args.model or settings["model"])
-    return NemotronTrader(runtime, memory=args.memory)
+    return NemotronTrader(runtime, memory=args.memory, research=open_research_archive(args.research_archive))
 
 
 def cmd_replay(args) -> None:
@@ -132,6 +137,7 @@ def main() -> None:
     run.add_argument("--script", help="script id under agent/scripts/ or a path to a JSON file")
     run.add_argument("--model", help="nemotron only: pinned model id, e.g. nvidia/nemotron-3-super-120b-a12b")
     run.add_argument("--memory", type=int, default=0, help="nemotron only: earlier decisions from this run kept in the prompt")
+    run.add_argument("--research-archive", help="nemotron only: directory of Exa collections (or EXA_RESEARCH_ARCHIVE); no live searches during replay")
     run.add_argument("--interval", default="hourly", choices=["hourly", "daily"])
     run.add_argument("--mode", default="V1", choices=["V1", "V2"])
     run.add_argument("--start", required=True, help="YYYY-MM-DD inclusive")

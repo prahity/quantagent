@@ -10,6 +10,12 @@ The project investigates whether a fixed Nemotron model can make better decision
 
 ## Data — Zetaris
 
+[Exa research integration](research/README.md) collects timestamped company news,
+filters it by UTC day/hour, and supplies only released evidence to the Nemotron
+trader through Meterless. Live collections keep their real retrieval times and
+cannot be backdated into historical trials. Setup uses `EXA_API_KEY`; research
+is optional and makes no web requests during trading or simulator replay.
+
 Zetaris is the full system's primary market-intelligence layer. Trading decisions and strategy revisions use evidence built by joining complementary registered sources through it. The [official platform overview](https://www.zetaris.com/cloud) describes federated access and a semantic layer; our financial views and evaluation protocol are application components to build.
 
 ### Sources and their roles
